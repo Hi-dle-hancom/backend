@@ -1,1 +1,18 @@
-{}
+{
+  "hapa_demo_20241228_secure_key_for_testing": {
+    "api_key": "hapa_demo_20241228_secure_key_for_testing",
+    "user_id": "demo_user",
+    "permissions": [
+      "code_generation",
+      "code_completion",
+      "feedback",
+      "history",
+      "admin"
+    ],
+    "created_at": "2025-06-17T13:57:40.719226",
+    "expires_at": "2026-06-17T13:57:40.719227",
+    "is_active": true,
+    "usage_count": 0,
+    "last_used": null
+  }
+}

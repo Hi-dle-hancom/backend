@@ -1,0 +1,17 @@
+{
+  "entries": {
+    "8c32d1183251df9828f929b935ae0419": {
+      "key": "test_key",
+      "created_at": 1750136250.969756,
+      "expires_at": 1750136310.969621,
+      "file_path": "data/cache/8c32d1183251df9828f929b935ae0419.cache",
+      "size": 115
+    }
+  },
+  "stats": {
+    "hits": 1,
+    "misses": 0,
+    "total_entries": 1,
+    "last_cleanup": 1750136267.873906
+  }
+}
