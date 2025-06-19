@@ -13,7 +13,7 @@ from app.core.config import settings
 from app.core.logging_config import StructuredLogger
 
 # 보안 설정
-security_bearer = HTTPBearer()
+security_bearer = HTTPBearer(auto_error=False)
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 logger = StructuredLogger("security")

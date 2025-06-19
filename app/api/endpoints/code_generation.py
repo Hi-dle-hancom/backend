@@ -4,7 +4,9 @@ from app.schemas.code_generation import (
     CodeGenerationRequest, 
     CodeGenerationResponse,
     CompletionRequest,
-    CompletionResponse
+    CompletionResponse,
+    StreamingGenerateRequest,
+    StreamingChunk
 )
 from app.services.inference import ai_model_service
 from app.core.logging_config import api_monitor, performance_monitor
@@ -15,6 +17,9 @@ from app.core.security import (
     APIKeyModel
 )
 from app.services.performance_profiler import response_timer
+from fastapi.responses import StreamingResponse as FastAPIStreamingResponse
+import json
+from datetime import datetime
 
 router = APIRouter()
 
@@ -59,10 +64,11 @@ async def generate_code(
             # AI 모델을 통한 최적화된 Python 코드 생성 및 파싱
             ai_start_time = time.time()
             try:
-                parsed_result = ai_model_service.predict_and_parse(
+                parsed_result = await ai_model_service.predict_and_parse(
                     prompt=user_question,
                     context=code_context,
-                    language=language
+                    language=language,
+                    access_token=None  # API Key 사용자는 개인화 없음
                 )
                 
                 ai_duration = time.time() - ai_start_time
@@ -236,6 +242,76 @@ async def complete_code(
         # 요청 종료 로깅
         total_duration = time.time() - start_time
         api_monitor.log_request_end("POST", "/complete", 200, total_duration, client_ip)
+
+@router.post("/stream-generate")
+async def stream_generate_code(
+    request: StreamingGenerateRequest,
+    http_request: Request,
+    api_key: APIKeyModel = Depends(check_permission("code_generation")),
+    rate_limit_check: APIKeyModel = Depends(check_rate_limit_dependency("/stream-generate", 30))
+):
+    """
+    실시간 스트리밍 방식으로 코드 생성
+    Server-Sent Events(SSE) 형태로 응답
+    """
+    try:
+        logger.info(f"스트리밍 코드 생성 요청 - 사용자: {api_key.user_id}")
+        
+        async def generate_sse_stream():
+            """SSE 형태의 스트리밍 응답 생성"""
+            try:
+                # AI 모델을 통한 스트리밍 응답 생성
+                async for chunk in ai_model_manager.generate_streaming_response(
+                    prompt=request.user_question,
+                    context=request.code_context
+                ):
+                    # SSE 형태로 데이터 포맷팅
+                    chunk_data = {
+                        "type": chunk.type,
+                        "content": chunk.content,
+                        "sequence": chunk.sequence,
+                        "timestamp": chunk.timestamp.isoformat()
+                    }
+                    
+                    # SSE 형식: data: {json}\n\n
+                    sse_data = f"data: {json.dumps(chunk_data, ensure_ascii=False)}\n\n"
+                    yield sse_data.encode('utf-8')
+                    
+                    # 완료 시 연결 종료
+                    if chunk.type == "done":
+                        break
+                        
+            except Exception as e:
+                logger.error(f"스트리밍 중 오류 발생: {str(e)}")
+                error_chunk = {
+                    "type": "error",
+                    "content": f"스트리밍 중 오류가 발생했습니다: {str(e)}",
+                    "sequence": -1,
+                    "timestamp": datetime.now().isoformat()
+                }
+                yield f"data: {json.dumps(error_chunk, ensure_ascii=False)}\n\n".encode('utf-8')
+        
+        # SSE 응답 헤더 설정
+        headers = {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Headers": "Cache-Control"
+        }
+        
+        return FastAPIStreamingResponse(
+            generate_sse_stream(),
+            media_type="text/event-stream",
+            headers=headers
+        )
+        
+    except Exception as e:
+        logger.error(f"스트리밍 엔드포인트 오류: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"스트리밍 서비스 오류: {str(e)}"
+        )
 
 def _generate_python_explanation(user_question: str, generated_code: str) -> str:
     """

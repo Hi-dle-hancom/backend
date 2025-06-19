@@ -31,7 +31,7 @@ class OptimizedAIModelService:
         cache_data = f"{prompt}|{context or ''}|{language}"
         return f"ai_inference:{hashlib.md5(cache_data.encode()).hexdigest()}"
 
-    def predict(self, prompt: str, context: Optional[str] = None, language: str = "python") -> str:
+    async def predict(self, prompt: str, context: Optional[str] = None, language: str = "python", access_token: Optional[str] = None) -> str:
         """AI 모델을 사용하여 Python 코드를 생성합니다."""
         # 모델 로딩 확인
         if not ai_model_manager.is_loaded():
@@ -48,14 +48,14 @@ class OptimizedAIModelService:
                 
                 cached_result = cache_get(cache_key)
                 if cached_result:
-                    logger.info("캐시된 응답 반환", cache_key=cache_key[:20])
+                    logger.info(f"캐시된 응답 반환: {cache_key[:20]}")
                     return cached_result
                 
                 # 프롬프트 전처리
                 processed_prompt = self._preprocess_prompt(prompt, context)
                 
-                # 코드 생성
-                generated_code = self.code_generator.generate_code(processed_prompt)
+                # 코드 생성 (비동기)
+                generated_code = await self.code_generator.generate_code(processed_prompt, access_token)
                 
                 # 결과 캐싱 (1시간 TTL)
                 cache_set(cache_key, generated_code, ttl=3600)
@@ -69,9 +69,9 @@ class OptimizedAIModelService:
     
     async def predict_async(self, prompt: str, context: Optional[str] = None, language: str = "python") -> str:
         """비동기 Python 코드 생성"""
-        return await asyncio.to_thread(self.predict, prompt, context, language)
+        return await self.predict(prompt, context, language)
 
-    def predict_and_parse(self, prompt: str, context: Optional[str] = None, language: str = "python") -> Dict[str, Any]:
+    async def predict_and_parse(self, prompt: str, context: Optional[str] = None, language: str = "python", access_token: Optional[str] = None) -> Dict[str, Any]:
         """AI 모델을 사용하여 Python 코드를 생성하고 결과를 파싱합니다."""
         try:
             # 캐시 키 생성 (파싱 결과용)
@@ -80,11 +80,11 @@ class OptimizedAIModelService:
             # 캐시된 파싱 결과 확인
             cached_result = cache_get(cache_key)
             if cached_result:
-                logger.info("캐시된 파싱 결과 반환", cache_key=cache_key[:20])
+                logger.info(f"캐시된 파싱 결과 반환: {cache_key[:20]}")
                 return cached_result
             
             # 1. AI 모델로부터 원시 응답 생성
-            raw_response = self._generate_raw_model_response(prompt, context, language)
+            raw_response = await self._generate_raw_model_response(prompt, context, language, access_token)
             
             # 2. 오류 패턴 감지
             if ErrorDetector.detect_error_patterns(raw_response):
@@ -121,7 +121,7 @@ class OptimizedAIModelService:
                 "error_message": f"AI 모델 처리 중 오류가 발생했습니다: {str(e)}"
             }
 
-    def _generate_raw_model_response(self, prompt: str, context: Optional[str], language: str) -> str:
+    async def _generate_raw_model_response(self, prompt: str, context: Optional[str], language: str, access_token: Optional[str] = None) -> str:
         """실제 AI 모델의 원시 응답을 시뮬레이션합니다."""
         # 원시 응답에 대한 캐시 확인
         cache_key = self._generate_cache_key(f"raw:{prompt}", context, language)
@@ -137,8 +137,8 @@ class OptimizedAIModelService:
         if "오류" in prompt or "error" in prompt.lower():
             return "ERROR: 모델 처리 중 오류가 발생했습니다."
         
-        # 코드 생성
-        code = self.code_generator.generate_code(processed_prompt)
+        # 코드 생성 (비동기)
+        code = await self.code_generator.generate_code(processed_prompt, access_token)
         explanation = self._generate_simple_explanation(prompt)
         
         raw_response = f"""{explanation}

@@ -1,5 +1,64 @@
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List, Union, Dict, Any
+from datetime import datetime
+from enum import Enum
+
+class PythonSkillLevel(str, Enum):
+    """Python 스킬 수준"""
+    BEGINNER = "beginner"
+    INTERMEDIATE = "intermediate"
+    ADVANCED = "advanced"
+    EXPERT = "expert"
+
+class CodeOutputStructure(str, Enum):
+    """코드 출력 구조"""
+    MINIMAL = "minimal"
+    STANDARD = "standard"
+    DETAILED = "detailed"
+    COMPREHENSIVE = "comprehensive"
+
+class ExplanationStyle(str, Enum):
+    """설명 스타일"""
+    BRIEF = "brief"
+    STANDARD = "standard"
+    DETAILED = "detailed"
+    EDUCATIONAL = "educational"
+
+class ProjectContext(str, Enum):
+    """프로젝트 컨텍스트"""
+    WEB_DEVELOPMENT = "web_development"
+    DATA_SCIENCE = "data_science"
+    AUTOMATION = "automation"
+    GENERAL_PURPOSE = "general_purpose"
+    ACADEMIC = "academic"
+    ENTERPRISE = "enterprise"
+
+class ErrorHandlingPreference(str, Enum):
+    """오류 처리 선호도"""
+    MINIMAL = "minimal"
+    BASIC = "basic"
+    COMPREHENSIVE = "comprehensive"
+    PRODUCTION_READY = "production_ready"
+
+class PythonLanguageFeature(str, Enum):
+    """Python 언어 기능"""
+    TYPE_HINTS = "type_hints"
+    DATACLASSES = "dataclasses"
+    ASYNC_AWAIT = "async_await"
+    COMPREHENSIONS = "comprehensions"
+    GENERATORS = "generators"
+    DECORATORS = "decorators"
+    CONTEXT_MANAGERS = "context_managers"
+    F_STRINGS = "f_strings"
+
+class UserProfile(BaseModel):
+    """사용자 프로필"""
+    pythonSkillLevel: PythonSkillLevel = Field(default=PythonSkillLevel.INTERMEDIATE, description="Python 스킬 수준")
+    codeOutputStructure: CodeOutputStructure = Field(default=CodeOutputStructure.STANDARD, description="코드 출력 구조")
+    explanationStyle: ExplanationStyle = Field(default=ExplanationStyle.STANDARD, description="설명 스타일")
+    projectContext: ProjectContext = Field(default=ProjectContext.GENERAL_PURPOSE, description="프로젝트 컨텍스트")
+    errorHandlingPreference: ErrorHandlingPreference = Field(default=ErrorHandlingPreference.BASIC, description="오류 처리 선호도")
+    preferredLanguageFeatures: List[PythonLanguageFeature] = Field(default=[PythonLanguageFeature.TYPE_HINTS, PythonLanguageFeature.F_STRINGS], description="선호하는 Python 언어 기능")
 
 class ErrorResponse(BaseModel):
     """표준 오류 응답 모델"""
@@ -25,6 +84,7 @@ class CodeGenerationRequest(BaseModel):
     code_context: Optional[str] = Field(None, max_length=50000, description="현재 편집 중인 코드 컨텍스트")
     language: Optional[str] = Field("python", description="프로그래밍 언어 (현재 Python만 지원)")
     file_path: Optional[str] = Field(None, max_length=1000, description="현재 편집 중인 파일 경로")
+    userProfile: Optional[UserProfile] = Field(None, description="사용자 프로필 정보")
     
     @field_validator('user_question')
     @classmethod
@@ -158,4 +218,26 @@ class CompletionResponse(BaseModel):
         if len(v) > 10:  # 최대 10개 제한
             raise ValueError('코드 완성 제안은 최대 10개까지만 허용됩니다.')
         
-        return v 
+        return v
+
+class StreamingGenerateRequest(BaseModel):
+    """스트리밍 코드 생성 요청"""
+    user_question: str = Field(..., description="사용자 질문", min_length=1, max_length=2000)
+    code_context: Optional[str] = Field(None, description="코드 컨텍스트", max_length=10000)
+    language: str = Field(default="python", description="프로그래밍 언어")
+    file_path: Optional[str] = Field(None, description="파일 경로")
+    stream: bool = Field(default=True, description="스트리밍 여부")
+    userProfile: Optional[UserProfile] = Field(None, description="사용자 프로필 정보")
+
+class StreamingChunk(BaseModel):
+    """스트리밍 응답 청크"""
+    type: str = Field(..., description="청크 타입: 'token', 'code', 'explanation', 'done'")
+    content: str = Field(..., description="청크 내용")
+    timestamp: datetime = Field(default_factory=datetime.now, description="타임스탬프")
+    sequence: int = Field(..., description="순서 번호")
+
+class StreamingResponse(BaseModel):
+    """스트리밍 응답 래퍼"""
+    session_id: str = Field(..., description="세션 ID")
+    total_chunks: Optional[int] = Field(None, description="전체 청크 수")
+    completed: bool = Field(default=False, description="완료 여부") 

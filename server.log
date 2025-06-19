@@ -1,0 +1,327 @@
+INFO:app.core.config:환경 설정 로드 완료: development 모드
+INFO:app.core.config:🔧 개발 환경 모드로 실행 중입니다.
+{"timestamp": "2025-06-19T10:30:42.500101", "level": "INFO", "logger": "startup", "message": "로깅 시스템 초기화 완료", "module": "logging_config", "function": "_log", "line": 85, "exc_info": null, "exc_text": null, "stack_info": null, "taskName": null, "service": "hapa-backend", "environment": "development", "log_level": "INFO", "debug_mode": true}
+INFO:     Will watch for changes in these directories: ['/Users/doseon/Desktop/Hancom AI/project/Backend']
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     Started reloader process [30829] using WatchFiles
+INFO:app.core.config:환경 설정 로드 완료: development 모드
+INFO:app.core.config:🔧 개발 환경 모드로 실행 중입니다.
+{"timestamp": "2025-06-19T10:30:42.757767", "level": "INFO", "logger": "startup", "message": "로깅 시스템 초기화 완료", "module": "logging_config", "function": "_log", "line": 85, "exc_info": null, "exc_text": null, "stack_info": null, "taskName": null, "service": "hapa-backend", "environment": "development", "log_level": "INFO", "debug_mode": true}
+{"timestamp": "2025-06-19T10:30:42.774664", "level": "INFO", "logger": "startup", "message": "로깅 시스템 초기화 완료", "module": "logging_config", "function": "_log", "line": 85, "exc_info": null, "exc_text": null, "stack_info": null, "taskName": "Task-1", "service": "hapa-backend", "environment": "development", "log_level": "INFO", "debug_mode": true}
+2025-06-19 10:30:42,781 - uvicorn.error - INFO - Started server process [30836]
+2025-06-19 10:30:42,781 - uvicorn.error - INFO - Waiting for application startup.
+{"timestamp": "2025-06-19T10:30:42.781248", "level": "INFO", "logger": "api_monitor", "message": "HAPA 백엔드 서버 시작", "module": "logging_config", "function": "_log", "line": 85, "exc_info": null, "exc_text": null, "stack_info": null, "taskName": "Task-2", "service": "hapa-backend", "environment": "development"}
+2025-06-19 10:30:42,784 - app.core.database - ERROR - 데이터베이스 연결 실패: [Errno 61] Connection refused
+{"timestamp": "2025-06-19T10:30:42.784319", "level": "ERROR", "logger": "api_monitor", "message": "데이터베이스 연결 실패: [Errno 61] Connection refused", "module": "logging_config", "function": "_log", "line": 85, "exc_info": null, "exc_text": null, "stack_info": null, "taskName": "Task-2", "service": "hapa-backend", "environment": "development"}
+{"timestamp": "2025-06-19T10:30:42.784384", "level": "INFO", "logger": "api_monitor", "message": "데모 API Key 사용 가능", "module": "logging_config", "function": "_log", "line": 85, "exc_info": null, "exc_text": null, "stack_info": null, "taskName": "Task-2", "service": "hapa-backend", "environment": "development", "api_key": "hapa_demo_20241228_secure_key_for_testing"}
+2025-06-19 10:30:42,784 - uvicorn.error - INFO - Application startup complete.
+{"timestamp": "2025-06-19T10:30:56.039256", "level": "WARNING", "logger": "api_monitor", "message": "HTTP 예외 발생: /api/v1/code/generate", "module": "logging_config", "function": "_log", "line": 85, "exc_info": null, "exc_text": null, "stack_info": null, "taskName": "Task-3", "service": "hapa-backend", "environment": "development", "status_code": 403, "detail": "Not authenticated", "client_ip": "127.0.0.1"}
+2025-06-19 10:30:56,039 - uvicorn.access - INFO - 127.0.0.1:54473 - "POST /api/v1/code/generate HTTP/1.1" 403
+2025-06-19 10:31:57,047 - watchfiles.main - INFO - 6 changes detected
+WARNING:  WatchFiles detected changes in 'app/core/config.py', 'app/schemas/user.py', 'app/core/database.py'. Reloading...
+2025-06-19 10:31:57,050 - uvicorn.error - INFO - Shutting down
+2025-06-19 10:31:57,152 - uvicorn.error - INFO - Waiting for application shutdown.
+{"timestamp": "2025-06-19T10:31:57.152452", "level": "INFO", "logger": "api_monitor", "message": "데이터베이스 연결 해제 완료", "module": "logging_config", "function": "_log", "line": 85, "exc_info": null, "exc_text": null, "stack_info": null, "taskName": "Task-2", "service": "hapa-backend", "environment": "development"}
+{"timestamp": "2025-06-19T10:31:57.152530", "level": "INFO", "logger": "api_monitor", "message": "HAPA 백엔드 서버 종료", "module": "logging_config", "function": "_log", "line": 85, "exc_info": null, "exc_text": null, "stack_info": null, "taskName": "Task-2", "service": "hapa-backend", "environment": "development"}
+2025-06-19 10:31:57,152 - uvicorn.error - INFO - Application shutdown complete.
+2025-06-19 10:31:57,152 - uvicorn.error - INFO - Finished server process [30836]
+Fatal Python error: init_sys_streams: can't initialize sys standard streams
+Python runtime state: core initialized
+OSError: [Errno 9] Bad file descriptor
+
+Current thread 0x00000001f8f8c840 (most recent call first):
+  <no Python frame>
+2025-06-19 10:31:57,572 - watchfiles.main - INFO - 14 changes detected
+WARNING:  WatchFiles detected changes in 'main.py', 'app/api/api.py', 'app/api/endpoints/users.py', 'setup_database.py', 'app/api/endpoints/code_generation.py', 'app/services/user_service.py', 'app/services/auth_service.py'. Reloading...
+Fatal Python error: init_sys_streams: can't initialize sys standard streams
+Python runtime state: core initialized
+OSError: [Errno 9] Bad file descriptor
+
+Current thread 0x00000001f8f8c840 (most recent call first):
+  <no Python frame>
+2025-06-19 10:37:28,211 - watchfiles.main - INFO - 1 change detected
+WARNING:  WatchFiles detected changes in 'app/services/user_service_client.py'. Reloading...
+Fatal Python error: init_sys_streams: can't initialize sys standard streams
+Python runtime state: core initialized
+OSError: [Errno 9] Bad file descriptor
+
+Current thread 0x00000001f8f8c840 (most recent call first):
+  <no Python frame>
+2025-06-19 10:37:29,971 - watchfiles.main - INFO - 1 change detected
+WARNING:  WatchFiles detected changes in 'app/services/user_service_client.py'. Reloading...
+Fatal Python error: init_sys_streams: can't initialize sys standard streams
+Python runtime state: core initialized
+OSError: [Errno 9] Bad file descriptor
+
+Current thread 0x00000001f8f8c840 (most recent call first):
+  <no Python frame>
+2025-06-19 10:37:30,647 - watchfiles.main - INFO - 1 change detected
+WARNING:  WatchFiles detected changes in 'app/services/user_service_client.py'. Reloading...
+Fatal Python error: init_sys_streams: can't initialize sys standard streams
+Python runtime state: core initialized
+OSError: [Errno 9] Bad file descriptor
+
+Current thread 0x00000001f8f8c840 (most recent call first):
+  <no Python frame>
+2025-06-19 10:37:49,926 - watchfiles.main - INFO - 1 change detected
+2025-06-19 10:38:01,572 - watchfiles.main - INFO - 1 change detected
+2025-06-19 10:38:41,469 - watchfiles.main - INFO - 1 change detected
+WARNING:  WatchFiles detected changes in 'app/services/code_generator.py'. Reloading...
+Fatal Python error: init_sys_streams: can't initialize sys standard streams
+Python runtime state: core initialized
+OSError: [Errno 9] Bad file descriptor
+
+Current thread 0x00000001f8f8c840 (most recent call first):
+  <no Python frame>
+2025-06-19 10:39:44,636 - watchfiles.main - INFO - 1 change detected
+WARNING:  WatchFiles detected changes in 'app/api/endpoints/code_generation.py'. Reloading...
+Fatal Python error: init_sys_streams: can't initialize sys standard streams
+Python runtime state: core initialized
+OSError: [Errno 9] Bad file descriptor
+
+Current thread 0x00000001f8f8c840 (most recent call first):
+  <no Python frame>
+2025-06-19 10:39:45,705 - watchfiles.main - INFO - 1 change detected
+WARNING:  WatchFiles detected changes in 'app/api/endpoints/code_generation.py'. Reloading...
+Fatal Python error: init_sys_streams: can't initialize sys standard streams
+Python runtime state: core initialized
+OSError: [Errno 9] Bad file descriptor
+
+Current thread 0x00000001f8f8c840 (most recent call first):
+  <no Python frame>
+2025-06-19 10:49:26,201 - watchfiles.main - INFO - 962 changes detected
+2025-06-19 10:49:26,571 - watchfiles.main - INFO - 285 changes detected
+WARNING:  WatchFiles detected changes in 'venv/lib/python3.12/site-packages/psutil/tests/test_process.py', 'venv/lib/python3.12/site-packages/prometheus_client/exposition.py', 'venv/lib/python3.12/site-packages/psutil/_psbsd.py', 'venv/lib/python3.12/site-packages/psutil/_psosx.py', 'venv/lib/python3.12/site-packages/prometheus_client/twisted/_exposition.py', 'venv/lib/python3.12/site-packages/psutil/tests/test_sunos.py', 'venv/lib/python3.12/site-packages/prometheus_client/core.py', 'venv/lib/python3.12/site-packages/prometheus_client/openmetrics/parser.py', 'venv/lib/python3.12/site-packages/psutil/tests/test_aix.py', 'venv/lib/python3.12/site-packages/psutil/tests/test_linux.py', 'venv/lib/python3.12/site-packages/prometheus_client/context_managers.py', 'venv/lib/python3.12/site-packages/prometheus_client/bridge/__init__.py', 'venv/lib/python3.12/site-packages/prometheus_client/gc_collector.py', 'venv/lib/python3.12/site-packages/mprof.py', 'venv/lib/python3.12/site-packages/psutil/_pswindows.py', 'venv/lib/python3.12/site-packages/psutil/tests/test_testutils.py', 'venv/lib/python3.12/site-packages/prometheus_client/platform_collector.py', 'venv/lib/python3.12/site-packages/prometheus_client/multiprocess.py', 'venv/lib/python3.12/site-packages/psutil/tests/runner.py', 'venv/lib/python3.12/site-packages/prometheus_client/samples.py', 'venv/lib/python3.12/site-packages/prometheus_client/mmap_dict.py', 'venv/lib/python3.12/site-packages/prometheus_client/openmetrics/__init__.py', 'venv/lib/python3.12/site-packages/prometheus_client/values.py', 'venv/lib/python3.12/site-packages/psutil/__init__.py', 'venv/lib/python3.12/site-packages/psutil/_pssunos.py', 'venv/lib/python3.12/site-packages/prometheus_client/__init__.py', 'venv/lib/python3.12/site-packages/prometheus_client/process_collector.py', 'venv/lib/python3.12/site-packages/psutil/tests/__init__.py', 'venv/lib/python3.12/site-packages/prometheus_client/asgi.py', 'venv/lib/python3.12/site-packages/psutil/tests/test_osx.py', 'venv/lib/python3.12/site-packages/psutil/tests/test_process_all.py', 'venv/lib/python3.12/site-packages/prometheus_client/metrics.py', 'venv/lib/python3.12/site-packages/psutil/_psposix.py', 'venv/lib/python3.12/site-packages/psutil/tests/test_windows.py', 'venv/lib/python3.12/site-packages/prometheus_client/decorator.py', 'venv/lib/python3.12/site-packages/prometheus_client/utils.py', 'venv/lib/python3.12/site-packages/psutil/tests/test_contracts.py', 'venv/lib/python3.12/site-packages/psutil/tests/__main__.py', 'venv/lib/python3.12/site-packages/psutil/tests/test_posix.py', 'venv/lib/python3.12/site-packages/psutil/_pslinux.py', 'venv/lib/python3.12/site-packages/psutil/tests/test_bsd.py', 'venv/lib/python3.12/site-packages/prometheus_client/openmetrics/exposition.py', 'venv/lib/python3.12/site-packages/prometheus_client/metrics_core.py', 'venv/lib/python3.12/site-packages/psutil/tests/test_misc.py', 'venv/lib/python3.12/site-packages/psutil/_compat.py', 'venv/lib/python3.12/site-packages/psutil/_psaix.py', 'venv/lib/python3.12/site-packages/psutil/tests/test_connections.py', 'venv/lib/python3.12/site-packages/prometheus_client/bridge/graphite.py', 'venv/lib/python3.12/site-packages/prometheus_client/registry.py', 'venv/lib/python3.12/site-packages/psutil/_common.py', 'venv/lib/python3.12/site-packages/psutil/tests/test_unicode.py', 'venv/lib/python3.12/site-packages/psutil/tests/test_memleaks.py', 'venv/lib/python3.12/site-packages/prometheus_client/twisted/__init__.py', 'venv/lib/python3.12/site-packages/psutil/tests/test_system.py', 'venv/lib/python3.12/site-packages/prometheus_client/parser.py', 'venv/lib/python3.12/site-packages/memory_profiler.py'. Reloading...
+Fatal Python error: init_sys_streams: can't initialize sys standard streams
+Python runtime state: core initialized
+OSError: [Errno 9] Bad file descriptor
+
+Current thread 0x00000001f8f8c840 (most recent call first):
+  <no Python frame>
+2025-06-19 10:50:30,849 - watchfiles.main - INFO - 794 changes detected
+2025-06-19 10:52:13,404 - watchfiles.main - INFO - 5 changes detected
+WARNING:  WatchFiles detected changes in 'app/services/user_service_client.py', 'app/api/endpoints/code_generation.py', 'app/services/code_generator.py'. Reloading...
+Fatal Python error: init_sys_streams: can't initialize sys standard streams
+Python runtime state: core initialized
+OSError: [Errno 9] Bad file descriptor
+
+Current thread 0x00000001f8f8c840 (most recent call first):
+  <no Python frame>
+2025-06-19 10:54:47,021 - watchfiles.main - INFO - 1 change detected
+WARNING:  WatchFiles detected changes in 'app/services/user_service.py'. Reloading...
+Fatal Python error: init_sys_streams: can't initialize sys standard streams
+Python runtime state: core initialized
+OSError: [Errno 9] Bad file descriptor
+
+Current thread 0x00000001f8f8c840 (most recent call first):
+  <no Python frame>
+2025-06-19 10:54:48,830 - watchfiles.main - INFO - 1 change detected
+WARNING:  WatchFiles detected changes in 'app/services/user_service.py'. Reloading...
+Fatal Python error: init_sys_streams: can't initialize sys standard streams
+Python runtime state: core initialized
+OSError: [Errno 9] Bad file descriptor
+
+Current thread 0x00000001f8f8c840 (most recent call first):
+  <no Python frame>
+2025-06-19 10:55:16,051 - watchfiles.main - INFO - 1 change detected
+WARNING:  WatchFiles detected changes in 'app/core/config.py'. Reloading...
+Fatal Python error: init_sys_streams: can't initialize sys standard streams
+Python runtime state: core initialized
+OSError: [Errno 9] Bad file descriptor
+
+Current thread 0x00000001f8f8c840 (most recent call first):
+  <no Python frame>
+2025-06-19 10:55:16,426 - watchfiles.main - INFO - 1 change detected
+WARNING:  WatchFiles detected changes in 'app/core/config.py'. Reloading...
+Fatal Python error: init_sys_streams: can't initialize sys standard streams
+Python runtime state: core initialized
+OSError: [Errno 9] Bad file descriptor
+
+Current thread 0x00000001f8f8c840 (most recent call first):
+  <no Python frame>
+2025-06-19 10:55:44,282 - watchfiles.main - INFO - 1 change detected
+WARNING:  WatchFiles detected changes in 'app/core/config.py'. Reloading...
+Fatal Python error: init_sys_streams: can't initialize sys standard streams
+Python runtime state: core initialized
+OSError: [Errno 9] Bad file descriptor
+
+Current thread 0x00000001f8f8c840 (most recent call first):
+  <no Python frame>
+2025-06-19 10:55:46,424 - watchfiles.main - INFO - 1 change detected
+WARNING:  WatchFiles detected changes in 'app/api/endpoints/users.py'. Reloading...
+Fatal Python error: init_sys_streams: can't initialize sys standard streams
+Python runtime state: core initialized
+OSError: [Errno 9] Bad file descriptor
+
+Current thread 0x00000001f8f8c840 (most recent call first):
+  <no Python frame>
+2025-06-19 10:55:48,310 - watchfiles.main - INFO - 1 change detected
+WARNING:  WatchFiles detected changes in 'app/api/endpoints/users.py'. Reloading...
+Fatal Python error: init_sys_streams: can't initialize sys standard streams
+Python runtime state: core initialized
+OSError: [Errno 9] Bad file descriptor
+
+Current thread 0x00000001f8f8c840 (most recent call first):
+  <no Python frame>
+2025-06-19 10:56:05,257 - watchfiles.main - INFO - 1 change detected
+WARNING:  WatchFiles detected changes in 'app/schemas/users.py'. Reloading...
+Fatal Python error: init_sys_streams: can't initialize sys standard streams
+Python runtime state: core initialized
+OSError: [Errno 9] Bad file descriptor
+
+Current thread 0x00000001f8f8c840 (most recent call first):
+  <no Python frame>
+2025-06-19 10:56:07,030 - watchfiles.main - INFO - 1 change detected
+WARNING:  WatchFiles detected changes in 'app/schemas/users.py'. Reloading...
+Fatal Python error: init_sys_streams: can't initialize sys standard streams
+Python runtime state: core initialized
+OSError: [Errno 9] Bad file descriptor
+
+Current thread 0x00000001f8f8c840 (most recent call first):
+  <no Python frame>
+2025-06-19 10:56:29,266 - watchfiles.main - INFO - 1 change detected
+WARNING:  WatchFiles detected changes in 'app/api/api.py'. Reloading...
+Fatal Python error: init_sys_streams: can't initialize sys standard streams
+Python runtime state: core initialized
+OSError: [Errno 9] Bad file descriptor
+
+Current thread 0x00000001f8f8c840 (most recent call first):
+  <no Python frame>
+2025-06-19 10:56:54,174 - watchfiles.main - INFO - 1 change detected
+WARNING:  WatchFiles detected changes in 'app/services/code_generator.py'. Reloading...
+Fatal Python error: init_sys_streams: can't initialize sys standard streams
+Python runtime state: core initialized
+OSError: [Errno 9] Bad file descriptor
+
+Current thread 0x00000001f8f8c840 (most recent call first):
+  <no Python frame>
+2025-06-19 10:57:16,295 - watchfiles.main - INFO - 1 change detected
+WARNING:  WatchFiles detected changes in 'app/services/code_generator.py'. Reloading...
+Fatal Python error: init_sys_streams: can't initialize sys standard streams
+Python runtime state: core initialized
+OSError: [Errno 9] Bad file descriptor
+
+Current thread 0x00000001f8f8c840 (most recent call first):
+  <no Python frame>
+2025-06-19 10:57:17,881 - watchfiles.main - INFO - 1 change detected
+WARNING:  WatchFiles detected changes in 'app/services/code_generator.py'. Reloading...
+Fatal Python error: init_sys_streams: can't initialize sys standard streams
+Python runtime state: core initialized
+OSError: [Errno 9] Bad file descriptor
+
+Current thread 0x00000001f8f8c840 (most recent call first):
+  <no Python frame>
+2025-06-19 10:57:45,981 - watchfiles.main - INFO - 1 change detected
+WARNING:  WatchFiles detected changes in 'app/services/code_generator.py'. Reloading...
+Fatal Python error: init_sys_streams: can't initialize sys standard streams
+Python runtime state: core initialized
+OSError: [Errno 9] Bad file descriptor
+
+Current thread 0x00000001f8f8c840 (most recent call first):
+  <no Python frame>
+2025-06-19 10:57:46,354 - watchfiles.main - INFO - 1 change detected
+WARNING:  WatchFiles detected changes in 'app/services/code_generator.py'. Reloading...
+Fatal Python error: init_sys_streams: can't initialize sys standard streams
+Python runtime state: core initialized
+OSError: [Errno 9] Bad file descriptor
+
+Current thread 0x00000001f8f8c840 (most recent call first):
+  <no Python frame>
+2025-06-19 10:58:13,309 - watchfiles.main - INFO - 1 change detected
+WARNING:  WatchFiles detected changes in 'app/services/code_generator.py'. Reloading...
+Fatal Python error: init_sys_streams: can't initialize sys standard streams
+Python runtime state: core initialized
+OSError: [Errno 9] Bad file descriptor
+
+Current thread 0x00000001f8f8c840 (most recent call first):
+  <no Python frame>
+2025-06-19 10:58:13,677 - watchfiles.main - INFO - 1 change detected
+WARNING:  WatchFiles detected changes in 'app/services/code_generator.py'. Reloading...
+Fatal Python error: init_sys_streams: can't initialize sys standard streams
+Python runtime state: core initialized
+OSError: [Errno 9] Bad file descriptor
+
+Current thread 0x00000001f8f8c840 (most recent call first):
+  <no Python frame>
+2025-06-19 10:58:27,448 - watchfiles.main - INFO - 1 change detected
+WARNING:  WatchFiles detected changes in 'app/services/code_generator.py'. Reloading...
+Fatal Python error: init_sys_streams: can't initialize sys standard streams
+Python runtime state: core initialized
+OSError: [Errno 9] Bad file descriptor
+
+Current thread 0x00000001f8f8c840 (most recent call first):
+  <no Python frame>
+2025-06-19 10:58:27,809 - watchfiles.main - INFO - 1 change detected
+WARNING:  WatchFiles detected changes in 'app/services/code_generator.py'. Reloading...
+Fatal Python error: init_sys_streams: can't initialize sys standard streams
+Python runtime state: core initialized
+OSError: [Errno 9] Bad file descriptor
+
+Current thread 0x00000001f8f8c840 (most recent call first):
+  <no Python frame>
+2025-06-19 10:58:37,001 - watchfiles.main - INFO - 1 change detected
+WARNING:  WatchFiles detected changes in 'app/services/code_generator.py'. Reloading...
+Fatal Python error: init_sys_streams: can't initialize sys standard streams
+Python runtime state: core initialized
+OSError: [Errno 9] Bad file descriptor
+
+Current thread 0x00000001f8f8c840 (most recent call first):
+  <no Python frame>
+2025-06-19 10:58:37,366 - watchfiles.main - INFO - 1 change detected
+WARNING:  WatchFiles detected changes in 'app/services/code_generator.py'. Reloading...
+Fatal Python error: init_sys_streams: can't initialize sys standard streams
+Python runtime state: core initialized
+OSError: [Errno 9] Bad file descriptor
+
+Current thread 0x00000001f8f8c840 (most recent call first):
+  <no Python frame>
+2025-06-19 10:58:46,654 - watchfiles.main - INFO - 1 change detected
+WARNING:  WatchFiles detected changes in 'app/services/code_generator.py'. Reloading...
+Fatal Python error: init_sys_streams: can't initialize sys standard streams
+Python runtime state: core initialized
+OSError: [Errno 9] Bad file descriptor
+
+Current thread 0x00000001f8f8c840 (most recent call first):
+  <no Python frame>
+2025-06-19 10:58:47,018 - watchfiles.main - INFO - 1 change detected
+WARNING:  WatchFiles detected changes in 'app/services/code_generator.py'. Reloading...
+Fatal Python error: init_sys_streams: can't initialize sys standard streams
+Python runtime state: core initialized
+OSError: [Errno 9] Bad file descriptor
+
+Current thread 0x00000001f8f8c840 (most recent call first):
+  <no Python frame>
+2025-06-19 10:58:56,760 - watchfiles.main - INFO - 1 change detected
+WARNING:  WatchFiles detected changes in 'app/services/code_generator.py'. Reloading...
+Fatal Python error: init_sys_streams: can't initialize sys standard streams
+Python runtime state: core initialized
+OSError: [Errno 9] Bad file descriptor
+
+Current thread 0x00000001f8f8c840 (most recent call first):
+  <no Python frame>
+2025-06-19 10:58:57,124 - watchfiles.main - INFO - 1 change detected
+WARNING:  WatchFiles detected changes in 'app/services/code_generator.py'. Reloading...
+Fatal Python error: init_sys_streams: can't initialize sys standard streams
+Python runtime state: core initialized
+OSError: [Errno 9] Bad file descriptor
+
+Current thread 0x00000001f8f8c840 (most recent call first):
+  <no Python frame>
+2025-06-19 10:59:07,633 - watchfiles.main - INFO - 1 change detected
+WARNING:  WatchFiles detected changes in 'app/services/code_generator.py'. Reloading...
+Fatal Python error: init_sys_streams: can't initialize sys standard streams
+Python runtime state: core initialized
+OSError: [Errno 9] Bad file descriptor
+
+Current thread 0x00000001f8f8c840 (most recent call first):
+  <no Python frame>
+2025-06-19 10:59:08,000 - watchfiles.main - INFO - 1 change detected
+WARNING:  WatchFiles detected changes in 'app/services/code_generator.py'. Reloading...
+Fatal Python error: init_sys_streams: can't initialize sys standard streams
+Python runtime state: core initialized
+OSError: [Errno 9] Bad file descriptor
+
+Current thread 0x00000001f8f8c840 (most recent call first):
+  <no Python frame>
+2025-06-19 11:00:00,137 - watchfiles.main - INFO - 9 changes detected
+INFO:     Stopping reloader process [30829]

@@ -1,17 +1,16 @@
 {
-  "entries": {
-    "8c32d1183251df9828f929b935ae0419": {
-      "key": "test_key",
-      "created_at": 1750136250.969756,
-      "expires_at": 1750136310.969621,
-      "file_path": "data/cache/8c32d1183251df9828f929b935ae0419.cache",
-      "size": 115
-    }
+  "cache_version": "1.0",
+  "created_at": "2025-06-19T07:30:00Z",
+  "total_entries": 0,
+  "cache_settings": {
+    "max_entries": 1000,
+    "ttl_hours": 24,
+    "auto_cleanup": true
   },
-  "stats": {
-    "hits": 1,
-    "misses": 0,
-    "total_entries": 1,
-    "last_cleanup": 1750136267.873906
+  "statistics": {
+    "cache_hits": 0,
+    "cache_misses": 0,
+    "cleanup_count": 1,
+    "last_cleanup": "2025-06-19T07:30:00Z"
   }
 }

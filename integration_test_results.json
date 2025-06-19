@@ -1,67 +1,12 @@
 {
-  "timestamp": "2025-06-16T13:23:36.897083",
-  "tests": [
-    {
-      "test_name": "서버 헬스 체크",
-      "status": "FAIL",
-      "timestamp": "2025-06-16T13:23:46.903017",
-      "details": {
-        "error": "HTTPConnectionPool(host='localhost', port=8000): Read timed out. (read timeout=10)"
-      }
-    },
-    {
-      "test_name": "Prometheus 메트릭 엔드포인트",
-      "status": "FAIL",
-      "timestamp": "2025-06-16T13:23:56.906861",
-      "details": {
-        "error": "HTTPConnectionPool(host='localhost', port=8000): Read timed out. (read timeout=10)"
-      }
-    },
-    {
-      "test_name": "성능 통계 엔드포인트",
-      "status": "FAIL",
-      "timestamp": "2025-06-16T13:24:06.909492",
-      "details": {
-        "error": "HTTPConnectionPool(host='localhost', port=8000): Read timed out. (read timeout=10)"
-      }
-    },
-    {
-      "test_name": "인증되지 않은 요청 차단",
-      "status": "FAIL",
-      "timestamp": "2025-06-16T13:24:16.914046",
-      "details": {
-        "error": "HTTPConnectionPool(host='localhost', port=8000): Read timed out. (read timeout=10)"
-      }
-    },
-    {
-      "test_name": "인증된 코드 생성 요청",
-      "status": "FAIL",
-      "timestamp": "2025-06-16T13:24:46.919403",
-      "details": {
-        "error": "HTTPConnectionPool(host='localhost', port=8000): Read timed out. (read timeout=30)"
-      }
-    },
-    {
-      "test_name": "코드 자동완성 요청",
-      "status": "FAIL",
-      "timestamp": "2025-06-16T13:25:16.924902",
-      "details": {
-        "error": "HTTPConnectionPool(host='localhost', port=8000): Read timed out. (read timeout=30)"
-      }
-    },
-    {
-      "test_name": "부하 테스트 (5개 요청)",
-      "status": "FAIL",
-      "timestamp": "2025-06-16T13:27:46.947191",
-      "details": {
-        "error": "모든 요청이 실패했습니다"
-      }
-    }
-  ],
+  "timestamp": "2025-06-19T07:30:00.000000",
+  "tests": [],
   "summary": {
-    "total": 7,
+    "total": 0,
     "passed": 0,
-    "failed": 7,
+    "failed": 0,
     "performance_metrics": {}
-  }
+  },
+  "status": "ready_for_testing",
+  "notes": "프로젝트 정리 후 초기화됨. 모든 캐시 파일이 정리되었으며 시스템이 테스트 준비 상태입니다."
 }

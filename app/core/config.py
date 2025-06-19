@@ -96,6 +96,10 @@ class Settings(BaseSettings):
     BACKUP_INTERVAL_HOURS: int = 24
     BACKUP_RETENTION_DAYS: int = 30
     
+    # DB Module 마이크로서비스 설정
+    DB_MODULE_URL: str = "http://localhost:8001"
+    DB_MODULE_TIMEOUT: int = 10
+    
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",
