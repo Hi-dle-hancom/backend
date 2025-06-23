@@ -1,7 +1,13 @@
 from fastapi import APIRouter, HTTPException, status, Header
 from typing import List, Dict, Any, Optional
 from app.services.user_service import user_service
-from app.schemas.users import UserLoginRequest, UserTokenResponse, UserSettingsRequest
+from app.schemas.users import (
+    UserLoginRequest, 
+    UserTokenResponse, 
+    UserSettingsRequest,
+    UserProfileRequest,
+    UserProfileResponse
+)
 from app.core.logging_config import api_monitor
 
 router = APIRouter()
@@ -178,3 +184,62 @@ async def get_setting_options(authorization: str = Header(...)):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="설정 옵션 조회 중 오류가 발생했습니다."
         ) 
+
+@router.post("/profile", response_model=UserProfileResponse)
+async def save_user_profile(
+    profile_request: UserProfileRequest,
+    authorization: str = Header(...)
+):
+    """
+    VSCode Extension 온보딩 완료 시 사용자 프로필 저장
+    온보딩에서 수집한 사용자 특징을 DB의 설정 옵션으로 저장합니다.
+    """
+    try:
+        if not authorization.startswith("Bearer "):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="잘못된 인증 헤더 형식입니다."
+            )
+        
+        access_token = authorization.split(" ")[1]
+        
+        # 사용자 프로필 데이터를 DB에 저장
+        success = await user_service.save_user_profile(
+            access_token=access_token,
+            profile_data=profile_request.profile_data,
+            option_ids=profile_request.settings_mapping
+        )
+        
+        if success:
+            api_monitor.logger.info(
+                "사용자 프로필 저장 성공",
+                extra={
+                    "profile_data": profile_request.profile_data,
+                    "settings_count": len(profile_request.settings_mapping)
+                }
+            )
+            return UserProfileResponse(
+                success=True,
+                message="사용자 프로필이 성공적으로 저장되었습니다.",
+                saved_settings_count=len(profile_request.settings_mapping)
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="프로필 저장에 실패했습니다."
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        api_monitor.log_error(
+            e, 
+            {
+                "operation": "save_user_profile",
+                "profile_data": profile_request.profile_data
+            }
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="프로필 저장 중 오류가 발생했습니다."
+        )

@@ -120,5 +120,30 @@ class UserService:
             logger.error(f"사용자 정보 조회 중 오류: {e}")
             return None
 
+    async def save_user_profile(
+        self, 
+        access_token: str, 
+        profile_data: Dict[str, Any], 
+        option_ids: List[int]
+    ) -> bool:
+        """VSCode Extension 온보딩 데이터를 사용자 설정으로 저장"""
+        try:
+            # 1. 기존 설정 업데이트 (설정 옵션 ID 기반)
+            settings_success = await self.update_user_settings(access_token, option_ids)
+            
+            if settings_success:
+                logger.info(
+                    f"사용자 프로필 저장 성공: {len(option_ids)}개 설정 저장",
+                    extra={"profile_data": profile_data}
+                )
+                return True
+            else:
+                logger.error("사용자 설정 저장 실패")
+                return False
+                
+        except Exception as e:
+            logger.error(f"사용자 프로필 저장 중 오류: {e}")
+            return False
+
 # 싱글톤 인스턴스
 user_service = UserService() 

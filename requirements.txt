@@ -9,7 +9,7 @@ httptools==0.6.4
 httpx==0.28.1
 idna==3.10
 iniconfig==2.1.0
-packaging==25.0
+packaging==24.0
 pluggy==1.6.0
 pydantic==2.11.5
 pydantic-settings==2.9.1
@@ -31,3 +31,14 @@ websockets==15.0.1
 psutil==6.0.0
 prometheus-client==0.21.0
 memory-profiler==0.61.0
+
+# 데이터베이스 (DB 모듈용)
+asyncpg==0.29.0
+
+# 보안 및 인증
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+python-multipart==0.0.9
+
+# 버전 충돌 해결
+pyasn1==0.4.8

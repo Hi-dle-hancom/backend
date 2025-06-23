@@ -120,17 +120,51 @@ class Settings(BaseSettings):
         """로그 레벨 정수값 반환"""
         return getattr(logging, self.LOG_LEVEL.upper(), logging.INFO)
 
-# 설정 인스턴스 생성
+# 설정 검증 함수
+def validate_production_settings(settings: Settings) -> None:
+    """운영 환경에서 필수 보안 설정을 검증합니다."""
+    if not settings.is_production():
+        return
+    
+    errors = []
+    
+    # SECRET_KEY 검증
+    if settings.SECRET_KEY == "hapa_secret_key_for_development_only_change_in_production":
+        errors.append("SECRET_KEY가 개발용 기본값입니다!")
+    elif len(settings.SECRET_KEY) < 32:
+        errors.append(f"SECRET_KEY가 너무 짧습니다 (현재: {len(settings.SECRET_KEY)}자, 최소: 32자)")
+    
+    # CORS 검증
+    if "*" in settings.CORS_ORIGINS:
+        errors.append("CORS_ORIGINS에 '*'가 포함되어 있습니다! 특정 도메인만 허용하세요.")
+    
+    # AI 모델 API 키 검증
+    if not settings.AI_MODEL_API_KEY:
+        errors.append("AI_MODEL_API_KEY가 설정되지 않았습니다!")
+    
+    # 디버그 모드 검증
+    if settings.DEBUG:
+        errors.append("DEBUG 모드가 활성화되어 있습니다! 운영환경에서는 비활성화하세요.")
+    
+    if errors:
+        error_msg = "🚨 [PRODUCTION] 보안 설정 오류:\n" + "\n".join(f"- {error}" for error in errors)
+        raise ValueError(error_msg)
+
+# 설정 인스턴스 생성 및 검증
 try:
     settings = Settings()
     logger.info(f"환경 설정 로드 완료: {settings.ENVIRONMENT} 모드")
     
+    # 운영 환경 보안 검증
+    validate_production_settings(settings)
+    
     if settings.is_production():
         logger.warning("⚠️  운영 환경 모드로 실행 중입니다.")
-        if settings.SECRET_KEY == "hapa_secret_key_for_development_only_change_in_production":
-            logger.error("🚨 운영 환경에서 개발용 SECRET_KEY를 사용하고 있습니다! 반드시 변경하세요!")
+        logger.info("✅ 운영 환경 보안 설정 검증 완료")
     else:
         logger.info("🔧 개발 환경 모드로 실행 중입니다.")
+        if settings.SECRET_KEY == "hapa_secret_key_for_development_only_change_in_production":
+            logger.warning("⚠️ 개발용 SECRET_KEY를 사용 중입니다. 운영 환경에서는 변경하세요!")
         
 except Exception as e:
     # .env 파일이 없어도 기본값으로 설정 인스턴스 생성

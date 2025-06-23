@@ -11,9 +11,16 @@ from app.core.config import settings
 from app.schemas.code_generation import ErrorResponse, ValidationErrorResponse
 from app.core.logging_config import setup_logging, api_monitor, performance_monitor, get_prometheus_metrics
 from app.core.security import create_demo_api_key
+from app.services.environment_validator import validate_environment_on_startup, get_environment_health
 
 # 로깅 시스템 초기화
 setup_logging()
+
+# 환경 변수 검증 (시작 시)
+if not validate_environment_on_startup():
+    api_monitor.logger.critical("🚨 Critical 환경 변수 오류로 인해 서버를 시작할 수 없습니다!")
+    import sys
+    sys.exit(1)
 
 # 애플리케이션 수명주기 관리
 @asynccontextmanager
@@ -166,6 +173,10 @@ async def general_exception_handler(request: Request, exc: Exception):
 # API 라우터 추가
 app.include_router(api_router, prefix=settings.API_V1_PREFIX)
 
+# 메트릭 라우터 추가 (API 버전 prefix 없이)
+from app.api.api import add_metrics_router
+add_metrics_router(app)
+
 # 루트 엔드포인트 설정 (테스트용)
 @app.get("/")
 async def root():
@@ -178,6 +189,7 @@ async def health_check():
     서버 상태를 확인하는 헬스 체크 엔드포인트입니다.
     """
     health_status = performance_monitor.get_health_status()
+    environment_health = get_environment_health()
     
     return {
         "status": health_status["status"],
@@ -185,7 +197,8 @@ async def health_check():
         "version": "0.4.0",
         "timestamp": health_status["timestamp"],
         "system_info": health_status["system"],
-        "performance_metrics": health_status["application"]
+        "performance_metrics": health_status["application"],
+        "environment_validation": environment_health
     }
 
 # 성능 통계 엔드포인트
@@ -194,18 +207,13 @@ async def performance_stats():
     """
     성능 통계 정보를 반환합니다.
     """
+    from app.services.performance_profiler import response_timer
     return {
         "performance": performance_monitor.get_health_status(),
         "response_times": response_timer.get_performance_stats()
     }
 
-# Prometheus 메트릭 엔드포인트
-@app.get("/metrics", response_class=PlainTextResponse)
-async def prometheus_metrics():
-    """
-    Prometheus 형식의 메트릭을 반환합니다.
-    """
-    return get_prometheus_metrics()
+# 메트릭 엔드포인트는 별도 모듈에서 관리됨 (app/api/endpoints/metrics.py)
 
 # 서버 실행을 위한 코드 (직접 실행 시 사용)
 if __name__ == "__main__":

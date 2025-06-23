@@ -1,16 +1,9 @@
 {
-  "cache_version": "1.0",
-  "created_at": "2025-06-19T07:30:00Z",
-  "total_entries": 0,
-  "cache_settings": {
-    "max_entries": 1000,
-    "ttl_hours": 24,
-    "auto_cleanup": true
-  },
-  "statistics": {
-    "cache_hits": 0,
-    "cache_misses": 0,
-    "cleanup_count": 1,
-    "last_cleanup": "2025-06-19T07:30:00Z"
+  "entries": {},
+  "stats": {
+    "hits": 0,
+    "misses": 13,
+    "total_entries": 0,
+    "last_cleanup": 1750665835.585734
   }
 }
