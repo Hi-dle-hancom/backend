@@ -42,3 +42,6 @@ python-multipart==0.0.9
 
 # 버전 충돌 해결
 pyasn1==0.4.8
+
+# Redis 클라이언트
+redis==5.0.1

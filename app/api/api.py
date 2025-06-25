@@ -10,7 +10,7 @@ api_router.include_router(enhanced_code_generation.router, prefix="/code", tags=
 api_router.include_router(feedback.router, prefix="/feedback", tags=["feedback"])
 api_router.include_router(validation.router, prefix="/validation", tags=["validation"])
 api_router.include_router(history.router, prefix="/history", tags=["history_and_settings"])
-api_router.include_router(cache.router, prefix="/cache", tags=["cache-management"])
+api_router.include_router(cache.router, tags=["cache-management"])
 api_router.include_router(users.router, prefix="/users", tags=["user_management"])
 
 # 메트릭 엔드포인트 (API 버전 prefix 없이 직접 등록)

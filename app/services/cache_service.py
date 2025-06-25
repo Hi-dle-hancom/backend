@@ -57,8 +57,9 @@ class PersistentCache:
             logger.error(f"캐시 메타데이터 저장 실패: {e}")
     
     def _generate_key_hash(self, key: str) -> str:
-        """키를 안전한 파일명으로 변환"""
-        return hashlib.md5(key.encode('utf-8')).hexdigest()
+        """키를 안전한 파일명으로 변환 (보안 강화: SHA-256 + Salt)"""
+        salt = "hapa_cache_salt_2024"
+        return hashlib.sha256(f"{salt}:{key}".encode('utf-8')).hexdigest()
     
     def _get_cache_file_path(self, key: str) -> Path:
         """캐시 파일 경로 생성"""

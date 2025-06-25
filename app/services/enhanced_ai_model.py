@@ -13,6 +13,7 @@ from datetime import datetime
 import httpx
 from app.core.config import settings
 from app.schemas.code_generation import StreamingChunk
+from app.core.settings_mapper import get_default_user_preferences
 
 logger = logging.getLogger(__name__)
 
@@ -203,364 +204,449 @@ class EnhancedAIModelManager:
             logger.error(f"AI 모델 초기화 실패: {e}")
             raise Exception(f"AI 모델 초기화 실패: {e}")
     
-    async def generate_code_with_safety(
-        self, 
-        prompt: str, 
-        context: Optional[str] = None,
-        user_preferences: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
-        """안전성 검증을 포함한 코드 생성"""
+    async def generate_code_with_safety(self, prompt: str, context: Optional[str] = None, user_preferences: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """개인화된 안전성 검증을 포함한 Python 코드 생성"""
         
-        # 1. 입력 안전성 검증
-        is_safe, safety_issues = self.safety_validator.validate_input_safety(prompt)
-        if not is_safe:
-            return {
-                "status": "error",
-                "error_type": "input_safety",
-                "error_message": "입력에서 안전하지 않은 내용이 감지되었습니다.",
-                "safety_issues": safety_issues,
-                "generated_code": "",
-                "explanation": ""
-            }
+        # 개인화 설정 적용
+        if user_preferences is None:
+            user_preferences = get_default_user_preferences()
         
-        # 2. AI 모델을 통한 코드 생성
         try:
-            if self.model_endpoint == "mock":
-                generated_code = await self._generate_mock_code(prompt, context, user_preferences)
-            else:
-                generated_code = await self._call_external_model(prompt, context, user_preferences)
+            logger.info(f"개인화된 Enhanced 코드 생성 시작: skill_level={user_preferences.get('skill_level')}, context={user_preferences.get('project_context')}")
+            
+            # 1. 입력 안전성 검증
+            safety_result = await self._validate_input_safety(prompt, context)
+            if not safety_result["is_safe"]:
+                return {
+                    "status": "error",
+                    "error_message": "입력이 안전하지 않습니다. 악성 코드나 위험한 요청이 감지되었습니다.",
+                    "error_type": "input_safety",
+                    "safety_issues": safety_result["issues"],
+                    "generated_code": "",
+                    "explanation": "",
+                    "safety_validated": False
+                }
+            
+            # 2. 개인화된 코드 생성
+            generation_result = await self._generate_personalized_code_with_ai(prompt, context, user_preferences)
+            
+            if generation_result["status"] != "success":
+                return generation_result
+            
+            generated_code = generation_result["generated_code"]
+            explanation = generation_result["explanation"]
             
             # 3. 생성된 코드 안전성 검증
-            code_is_safe, code_issues = self.safety_validator.validate_generated_code_safety(generated_code)
+            code_safety_result = await self._validate_code_safety(generated_code, user_preferences)
             
-            if not code_is_safe:
-                logger.warning(f"생성된 코드에서 안전성 문제 감지: {code_issues}")
-                # 안전하지 않은 코드는 필터링하여 재생성
-                generated_code = await self._generate_safe_fallback_code(prompt)
+            # 4. 코드 품질 평가 (개인화 반영)
+            quality_score = await self._evaluate_code_quality(generated_code, prompt, user_preferences)
             
-            # 4. 코드 품질 검증
-            quality_score = self._evaluate_code_quality(generated_code)
-            
-            # 5. 설명 생성
-            explanation = self._generate_explanation(prompt, generated_code, user_preferences)
+            # 5. 개인화된 설명 생성
+            personalized_explanation = self._enhance_explanation_with_personalization(explanation, user_preferences)
             
             return {
                 "status": "success",
                 "generated_code": generated_code,
-                "explanation": explanation,
-                "safety_validated": True,
+                "explanation": personalized_explanation,
                 "quality_score": quality_score,
-                "safety_issues": [],
+                "safety_validated": code_safety_result["is_safe"],
                 "metadata": {
                     "model_endpoint": self.model_endpoint,
-                    "generation_time": time.time(),
-                    "prompt_length": len(prompt),
-                    "code_length": len(generated_code)
+                    "safety_level": user_preferences.get('safety_level', 'standard'),
+                    "personalization": {
+                        "skill_level": user_preferences.get('skill_level'),
+                        "project_context": user_preferences.get('project_context'),
+                        "code_style": user_preferences.get('code_style'),
+                        "language_features": user_preferences.get('language_features', [])
+                    },
+                    "safety_checks": {
+                        "input_safety": safety_result["is_safe"],
+                        "code_safety": code_safety_result["is_safe"],
+                        "detected_issues": code_safety_result.get("issues", [])
+                    }
                 }
             }
             
         except Exception as e:
-            logger.error(f"코드 생성 중 오류 발생: {e}")
+            logger.error(f"Enhanced 개인화 코드 생성 실패: {e}")
             return {
                 "status": "error",
+                "error_message": f"코드 생성 중 오류가 발생했습니다: {str(e)}",
                 "error_type": "generation_error",
-                "error_message": str(e),
                 "generated_code": "",
                 "explanation": "",
                 "safety_validated": False
             }
-    
-    async def _call_external_model(
-        self, 
-        prompt: str, 
-        context: Optional[str] = None,
-        user_preferences: Optional[Dict[str, Any]] = None
-    ) -> str:
-        """외부 AI 모델 API 호출"""
+
+    async def _generate_personalized_code_with_ai(self, prompt: str, context: Optional[str], user_preferences: Dict[str, Any]) -> Dict[str, Any]:
+        """사용자 선호도를 반영한 AI 코드 생성"""
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                payload = {
-                    "prompt": prompt,
-                    "context": context,
-                    "language": "python",
-                    "preferences": user_preferences or {}
-                }
-                
-                headers = {
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {settings.AI_MODEL_API_KEY}"
-                }
-                
-                response = await client.post(
-                    self.model_endpoint,
-                    json=payload,
-                    headers=headers
-                )
-                
-                if response.status_code == 200:
-                    result = response.json()
-                    return result.get("generated_code", "")
+            # 개인화된 시스템 프롬프트 생성
+            system_prompt = self._build_personalized_system_prompt(user_preferences)
+            
+            # 개인화된 사용자 프롬프트 생성
+            user_prompt = self._build_personalized_user_prompt(prompt, context, user_preferences)
+            
+            # AI 모델 호출
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ]
+            
+            response = await self.client.chat.completions.create(
+                model=self.model_name,
+                messages=messages,
+                max_tokens=2000,
+                temperature=0.7,
+                top_p=0.9
+            )
+            
+            content = response.choices[0].message.content
+            
+            # 코드와 설명 분리
+            if "```python" in content:
+                parts = content.split("```python")
+                if len(parts) > 1:
+                    code_part = parts[1].split("```")[0].strip()
+                    explanation_part = content.replace(f"```python\n{code_part}\n```", "").strip()
                 else:
-                    raise Exception(f"AI 모델 API 호출 실패: {response.status_code}")
-                    
-        except Exception as e:
-            logger.error(f"외부 AI 모델 호출 실패: {e}")
-            # 외부 모델 실패 시 Mock 모델로 폴백
-            return await self._generate_mock_code(prompt, context, user_preferences)
-    
-    async def _generate_mock_code(
-        self, 
-        prompt: str, 
-        context: Optional[str] = None,
-        user_preferences: Optional[Dict[str, Any]] = None
-    ) -> str:
-        """Mock AI 모델 - 안전하고 실용적인 코드 생성"""
-        
-        prompt_lower = prompt.lower()
-        skill_level = user_preferences.get("skill_level", "intermediate") if user_preferences else "intermediate"
-        
-        # 피보나치 관련 요청
-        if any(keyword in prompt_lower for keyword in ["fibonacci", "피보나치"]):
-            if skill_level == "beginner":
-                return '''def fibonacci(n):
-    """피보나치 수열의 n번째 값을 계산합니다."""
-    if n <= 0:
-        return 0
-    elif n == 1:
-        return 1
-    else:
-        # 재귀적으로 계산
-        return fibonacci(n-1) + fibonacci(n-2)
-
-# 사용 예시
-print(fibonacci(10))  # 55'''
+                    code_part = content
+                    explanation_part = "생성된 Python 코드입니다."
             else:
-                return '''def fibonacci(n, memo={}):
-    """메모이제이션을 사용한 효율적인 피보나치 계산"""
-    if n in memo:
-        return memo[n]
-    if n <= 1:
-        return n
-    memo[n] = fibonacci(n-1, memo) + fibonacci(n-2, memo)
-    return memo[n]
+                code_part = content
+                explanation_part = "생성된 Python 코드입니다."
+            
+            return {
+                "status": "success",
+                "generated_code": code_part,
+                "explanation": explanation_part
+            }
+            
+        except Exception as e:
+            logger.error(f"AI 개인화 코드 생성 실패: {e}")
+            return {
+                "status": "error",
+                "error_message": f"AI 코드 생성 실패: {str(e)}",
+                "error_type": "ai_generation_error"
+            }
 
-# 리스트 생성 버전
-def fibonacci_sequence(length):
-    """피보나치 수열을 리스트로 생성"""
-    if length <= 0:
-        return []
-    elif length == 1:
-        return [0]
-    elif length == 2:
-        return [0, 1]
-    
-    sequence = [0, 1]
-    for i in range(2, length):
-        sequence.append(sequence[i-1] + sequence[i-2])
-    return sequence'''
+    def _build_personalized_system_prompt(self, user_preferences: Dict[str, Any]) -> str:
+        """사용자 선호도를 반영한 시스템 프롬프트 생성"""
+        skill_level = user_preferences.get('skill_level', 'intermediate')
+        code_style = user_preferences.get('code_style', 'standard')
+        project_context = user_preferences.get('project_context', 'general_purpose')
+        comment_style = user_preferences.get('comment_style', 'standard')
+        error_handling = user_preferences.get('error_handling', 'basic')
+        language_features = user_preferences.get('language_features', [])
+        safety_level = user_preferences.get('safety_level', 'standard')
         
-        # 정렬 관련 요청
-        elif any(keyword in prompt_lower for keyword in ["sort", "정렬", "소트"]):
-            return '''def quicksort(arr):
-    """퀵소트 알고리즘 구현"""
-    if len(arr) <= 1:
-        return arr
-    
-    pivot = arr[len(arr) // 2]
-    left = [x for x in arr if x < pivot]
-    middle = [x for x in arr if x == pivot]
-    right = [x for x in arr if x > pivot]
-    
-    return quicksort(left) + middle + quicksort(right)
-
-# 사용 예시
-numbers = [3, 6, 8, 10, 1, 2, 1]
-sorted_numbers = quicksort(numbers)
-print(f"정렬 결과: {sorted_numbers}")'''
+        base_prompt = """당신은 안전하고 고품질의 Python 코드를 생성하는 전문 AI 어시스턴트입니다."""
         
-        # 클래스 관련 요청
-        elif any(keyword in prompt_lower for keyword in ["class", "클래스", "객체"]):
-            return '''class Calculator:
-    """간단한 계산기 클래스"""
-    
-    def __init__(self):
-        self.history = []
-    
-    def add(self, a, b):
-        """덧셈"""
-        result = a + b
-        self.history.append(f"{a} + {b} = {result}")
-        return result
-    
-    def subtract(self, a, b):
-        """뺄셈"""
-        result = a - b
-        self.history.append(f"{a} - {b} = {result}")
-        return result
-    
-    def multiply(self, a, b):
-        """곱셈"""
-        result = a * b
-        self.history.append(f"{a} * {b} = {result}")
-        return result
-    
-    def divide(self, a, b):
-        """나눗셈"""
-        if b == 0:
-            raise ValueError("0으로 나눌 수 없습니다")
-        result = a / b
-        self.history.append(f"{a} / {b} = {result}")
-        return result
-    
-    def get_history(self):
-        """계산 히스토리 반환"""
-        return self.history
-
-# 사용 예시
-calc = Calculator()
-print(calc.add(10, 5))  # 15
-print(calc.multiply(3, 4))  # 12
-print(calc.get_history())'''
-        
-        # 기본 함수 생성
+        # 스킬 수준별 프롬프트 조정
+        if skill_level == 'beginner':
+            skill_prompt = """
+사용자는 Python 초급자입니다:
+- 매우 상세한 주석과 단계별 설명을 포함하세요
+- 기본적이고 이해하기 쉬운 문법을 사용하세요
+- 복잡한 개념은 간단히 설명하세요
+- 학습에 도움이 되는 설명을 추가하세요"""
+        elif skill_level == 'advanced':
+            skill_prompt = """
+사용자는 Python 고급자입니다:
+- 효율적이고 최적화된 코드를 작성하세요
+- 고급 Python 기능과 패턴을 활용하세요
+- 성능과 메모리 효율성을 고려하세요
+- 간결하지만 명확한 주석을 포함하세요"""
+        elif skill_level == 'expert':
+            skill_prompt = """
+사용자는 Python 전문가입니다:
+- 최신 Python 기능과 모범 사례를 적용하세요
+- 아키텍처 설계와 확장성을 고려하세요
+- 고성능 및 메모리 최적화된 솔루션을 제공하세요
+- 필요시 고급 디자인 패턴을 활용하세요"""
         else:
-            return '''def process_data(data):
-    """데이터를 처리하는 함수"""
-    if not data:
-        return []
-    
-    # 데이터 정리
-    cleaned_data = [item for item in data if item is not None]
-    
-    # 데이터 변환
-    processed_data = [str(item).strip() for item in cleaned_data]
-    
-    return processed_data
-
-# 사용 예시
-sample_data = ["hello", " world ", None, 123, ""]
-result = process_data(sample_data)
-print(f"처리 결과: {result}")'''
-    
-    async def _generate_safe_fallback_code(self, prompt: str) -> str:
-        """안전한 폴백 코드 생성"""
-        return '''# 안전성 검증을 통과하지 못해 기본 코드를 제공합니다.
-def safe_function():
-    """안전한 기본 함수"""
-    message = "안전한 코드가 생성되었습니다."
-    print(message)
-    return message
-
-# 함수 실행
-safe_function()'''
-    
-    def _evaluate_code_quality(self, code: str) -> float:
-        """코드 품질을 평가합니다 (0.0 - 1.0)"""
-        score = 0.0
+            skill_prompt = """
+사용자는 Python 중급자입니다:
+- 실용적이고 읽기 쉬운 코드를 작성하세요
+- 적절한 수준의 주석을 포함하세요
+- 좋은 프로그래밍 관행을 따르세요"""
         
-        # 기본 점수
-        if code.strip():
-            score += 0.2
+        # 프로젝트 컨텍스트별 프롬프트
+        if project_context == 'web_development':
+            context_prompt = """
+웹 개발 컨텍스트에 맞는 코드를 생성하세요:
+- FastAPI, Flask 등 웹 프레임워크 활용
+- REST API, HTTP 처리, JSON 응답 등 고려
+- 보안, 인증, 데이터 검증 포함
+- 웹 개발 모범 사례 적용"""
+        elif project_context == 'data_science':
+            context_prompt = """
+데이터 사이언스 컨텍스트에 맞는 코드를 생성하세요:
+- pandas, numpy, matplotlib, seaborn 등 활용
+- 데이터 처리, 분석, 시각화 포함
+- 머신러닝 라이브러리(scikit-learn) 활용
+- 데이터 과학 워크플로우 고려"""
+        elif project_context == 'automation':
+            context_prompt = """
+자동화 컨텍스트에 맞는 코드를 생성하세요:
+- 파일 처리, 스케줄링, 시스템 작업 등
+- 오류 처리와 로깅 강화
+- 안정성과 신뢰성 우선
+- 반복 작업 자동화에 특화"""
+        else:
+            context_prompt = """일반적인 Python 프로그래밍 컨텍스트로 코드를 생성하세요."""
         
-        # 독스트링 존재
-        if '"""' in code or "'''" in code:
-            score += 0.2
+        # 언어 기능 선호도
+        feature_prompts = []
+        if 'type_hints' in language_features:
+            feature_prompts.append("- 타입 힌트를 적극적으로 사용하세요")
+        if 'f_strings' in language_features:
+            feature_prompts.append("- f-string을 사용한 문자열 포맷팅을 선호하세요")
+        if 'dataclasses' in language_features:
+            feature_prompts.append("- 적절한 경우 dataclass를 활용하세요")
+        if 'async_await' in language_features:
+            feature_prompts.append("- 비동기 프로그래밍이 필요한 경우 async/await를 사용하세요")
         
-        # 적절한 함수/클래스 정의
-        if 'def ' in code or 'class ' in code:
-            score += 0.2
+        feature_prompt = "\n".join(feature_prompts) if feature_prompts else ""
         
-        # 주석 존재
-        if '#' in code:
-            score += 0.1
+        # 에러 처리 수준
+        if error_handling == 'robust':
+            error_prompt = """
+강화된 에러 처리를 포함하세요:
+- 모든 예외 상황을 고려한 comprehensive try-catch
+- 상세한 에러 로깅과 메시지
+- 복구 메커니즘과 fallback 로직
+- 사용자 친화적인 에러 메시지"""
+        elif error_handling == 'detailed':
+            error_prompt = """
+상세한 에러 처리를 포함하세요:
+- 주요 예외 상황에 대한 try-catch
+- 적절한 에러 메시지와 로깅
+- 기본적인 복구 로직"""
+        else:
+            error_prompt = """기본적인 에러 처리를 포함하세요."""
         
-        # 예외 처리
-        if 'try:' in code and 'except' in code:
-            score += 0.1
+        # 안전성 수준
+        if safety_level == 'strict':
+            safety_prompt = """
+매우 엄격한 안전성 기준을 적용하세요:
+- 모든 입력 검증과 sanitization
+- SQL injection, XSS 등 보안 취약점 방지
+- 최소 권한 원칙 적용
+- 보안 모범 사례 철저히 준수"""
+        elif safety_level == 'enhanced':
+            safety_prompt = """
+강화된 안전성 기준을 적용하세요:
+- 입력 검증과 데이터 타입 확인
+- 일반적인 보안 취약점 방지
+- 안전한 코딩 관행 적용"""
+        else:
+            safety_prompt = """기본적인 안전성 기준을 적용하세요."""
         
-        # 사용 예시
-        if '# 사용 예시' in code or '# 예시' in code:
-            score += 0.1
+        return f"""{base_prompt}
+
+{skill_prompt}
+
+{context_prompt}
+
+{feature_prompt}
+
+{error_prompt}
+
+{safety_prompt}
+
+안전하고 실행 가능한 Python 코드만 생성하세요. 악성 코드나 시스템에 해를 끼칠 수 있는 코드는 절대 생성하지 마세요."""
+
+    def _build_personalized_user_prompt(self, prompt: str, context: Optional[str], user_preferences: Dict[str, Any]) -> str:
+        """개인화된 사용자 프롬프트 생성"""
+        code_style = user_preferences.get('code_style', 'standard')
+        comment_style = user_preferences.get('comment_style', 'standard')
         
-        # 변수명 품질 (간단한 검사)
-        if not re.search(r'\b[a-z]\b', code):  # 단일 문자 변수가 없음
-            score += 0.1
+        base_prompt = f"다음 요청에 대한 Python 코드를 생성해주세요:\n\n{prompt}"
         
-        return min(score, 1.0)
-    
-    def _generate_explanation(
-        self, 
-        prompt: str, 
-        code: str, 
-        user_preferences: Optional[Dict[str, Any]] = None
-    ) -> str:
-        """코드 설명을 생성합니다."""
+        if context:
+            base_prompt += f"\n\n컨텍스트:\n{context}"
         
-        skill_level = user_preferences.get("skill_level", "intermediate") if user_preferences else "intermediate"
+        style_instructions = []
         
-        if skill_level == "beginner":
-            return f"""
-이 코드는 "{prompt}"에 대한 Python 구현입니다.
+        if code_style == 'minimal':
+            style_instructions.append("- 최소한의 코드로 핵심 기능만 구현")
+        elif code_style == 'detailed':
+            style_instructions.append("- 상세한 구현과 추가 기능 포함")
+        elif code_style == 'comprehensive':
+            style_instructions.append("- 포괄적이고 완전한 솔루션 제공")
+        
+        if comment_style == 'brief':
+            style_instructions.append("- 간단한 주석만 포함")
+        elif comment_style == 'detailed':
+            style_instructions.append("- 상세한 주석과 설명 포함")
+        elif comment_style == 'educational':
+            style_instructions.append("- 학습용 상세 설명과 주석 포함")
+        
+        if style_instructions:
+            base_prompt += f"\n\n요구사항:\n" + "\n".join(style_instructions)
+        
+        return base_prompt
 
-📝 코드 설명:
-• 함수나 클래스를 정의하여 원하는 기능을 구현했습니다
-• 각 부분이 어떤 역할을 하는지 주석으로 설명했습니다
-• 실제 사용 예시도 포함되어 있어 바로 실행해볼 수 있습니다
+    async def _validate_code_safety(self, code: str, user_preferences: Dict[str, Any]) -> Dict[str, Any]:
+        """개인화된 코드 안전성 검증"""
+        try:
+            safety_level = user_preferences.get('safety_level', 'standard')
+            skill_level = user_preferences.get('skill_level', 'intermediate')
+            
+            # 기본 위험 패턴
+            dangerous_patterns = [
+                r'os\.system\s*\(',
+                r'subprocess\.',
+                r'eval\s*\(',
+                r'exec\s*\(',
+                r'__import__\s*\(',
+                r'open\s*\(\s*["\'][^"\']*["\']\s*,\s*["\']w',
+                r'shutil\.rmtree',
+                r'os\.remove',
+                r'socket\.',
+                r'urllib\.request\.',
+                r'requests\.'
+            ]
+            
+            # 안전성 수준별 추가 패턴
+            if safety_level == 'strict':
+                dangerous_patterns.extend([
+                    r'pickle\.',
+                    r'marshal\.',
+                    r'compile\s*\(',
+                    r'globals\s*\(',
+                    r'locals\s*\(',
+                    r'vars\s*\(',
+                    r'dir\s*\(',
+                    r'getattr\s*\(',
+                    r'setattr\s*\(',
+                    r'delattr\s*\(',
+                ])
+            
+            # 초급자는 더 엄격한 검증
+            if skill_level == 'beginner':
+                dangerous_patterns.extend([
+                    r'lambda\s+',
+                    r'yield\s+',
+                    r'with\s+open\s*\(',
+                ])
+            
+            issues = []
+            for pattern in dangerous_patterns:
+                if re.search(pattern, code, re.IGNORECASE):
+                    issues.append(f"잠재적 위험 패턴 감지: {pattern}")
+            
+            is_safe = len(issues) == 0
+            
+            return {
+                "is_safe": is_safe,
+                "issues": issues,
+                "safety_level": safety_level,
+                "validation_details": {
+                    "patterns_checked": len(dangerous_patterns),
+                    "issues_found": len(issues)
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"코드 안전성 검증 실패: {e}")
+            return {
+                "is_safe": False,
+                "issues": ["안전성 검증 중 오류 발생"],
+                "safety_level": "unknown"
+            }
 
-🔍 사용 방법:
-1. 코드를 Python 파일(.py)에 저장하세요
-2. Python 인터프리터나 IDE에서 실행하세요
-3. 필요에 따라 변수값을 수정해서 테스트해보세요
+    async def _evaluate_code_quality(self, code: str, prompt: str, user_preferences: Dict[str, Any]) -> float:
+        """개인화된 코드 품질 평가"""
+        try:
+            skill_level = user_preferences.get('skill_level', 'intermediate')
+            language_features = user_preferences.get('language_features', [])
+            
+            quality_score = 0.0
+            
+            # 기본 품질 지표
+            if len(code.strip()) > 10:
+                quality_score += 0.2
+            
+            if 'def ' in code or 'class ' in code:
+                quality_score += 0.2
+            
+            if '#' in code:  # 주석 포함
+                quality_score += 0.15
+            
+            # Python 문법 검증
+            try:
+                ast.parse(code)
+                quality_score += 0.25
+            except SyntaxError:
+                quality_score -= 0.3
+            
+            # 언어 기능 선호도 반영
+            if 'type_hints' in language_features and ':' in code and '->' in code:
+                quality_score += 0.1
+            
+            if 'f_strings' in language_features and 'f"' in code:
+                quality_score += 0.05
+            
+            if 'dataclasses' in language_features and '@dataclass' in code:
+                quality_score += 0.05
+            
+            # 스킬 수준별 추가 평가
+            if skill_level == 'expert':
+                # 고급 패턴 확인
+                if any(pattern in code for pattern in ['with ', 'yield ', 'async def', 'await ']):
+                    quality_score += 0.1
+            elif skill_level == 'beginner':
+                # 초급자용 명확성 확인
+                if code.count('\n') >= 5:  # 충분한 설명
+                    quality_score += 0.05
+            
+            return max(0.0, min(1.0, quality_score))
+            
+        except Exception as e:
+            logger.error(f"코드 품질 평가 실패: {e}")
+            return 0.5
 
-💡 학습 포인트:
-• Python의 기본 문법을 익힐 수 있습니다
-• 함수 정의와 호출 방법을 배울 수 있습니다
-• 실용적인 프로그래밍 패턴을 이해할 수 있습니다
-"""
-        elif skill_level == "advanced" or skill_level == "expert":
-            return f"""
-고급 Python 구현 - "{prompt}"
-
-🏗️ 아키텍처:
-• 최적화된 알고리즘과 데이터 구조 활용
-• 성능과 메모리 효율성을 고려한 설계
-• 확장 가능하고 재사용 가능한 구조
-
-⚡ 성능 특징:
-• 시간 복잡도와 공간 복잡도 최적화
-• 메모이제이션 등 성능 향상 기법 적용
-• 대용량 데이터 처리 고려
-
-🔧 고급 기능:
-• 제네릭 타입 힌트 적용 가능
-• 데코레이터 패턴 확장 가능
-• 멀티스레딩/비동기 처리 적용 가능
-
-📈 확장 방향:
-• 더 복잡한 요구사항에 대응 가능
-• 프로덕션 환경에서 안정적 동작
-• 테스트 주도 개발(TDD) 적용 권장
-"""
-        else:  # intermediate
-            return f"""
-"{prompt}"에 대한 Python 구현
-
-💻 구현 내용:
-• 요청하신 기능을 명확하고 효율적으로 구현했습니다
-• Python의 표준 라이브러리를 활용하여 안정성을 높였습니다
-• 읽기 쉽고 유지보수가 용이한 코드로 작성했습니다
-
-🎯 핵심 기능:
-• 입력 데이터 검증 및 예외 처리
-• 명확한 함수 분리와 단일 책임 원칙 적용
-• 실용적인 사용 예시 제공
-
-🚀 개선 아이디어:
-• 더 많은 에러 케이스 처리 추가 가능
-• 성능 최적화 (필요시)
-• 추가 기능 확장 가능
-• 단위 테스트 작성 권장
-"""
+    def _enhance_explanation_with_personalization(self, explanation: str, user_preferences: Dict[str, Any]) -> str:
+        """개인화된 설명 강화"""
+        try:
+            skill_level = user_preferences.get('skill_level', 'intermediate')
+            comment_style = user_preferences.get('comment_style', 'standard')
+            project_context = user_preferences.get('project_context', 'general_purpose')
+            
+            enhanced_explanation = explanation
+            
+            # 스킬 수준별 설명 조정
+            if skill_level == 'beginner':
+                enhanced_explanation += "\n\n[초급자용 추가 설명]\n"
+                enhanced_explanation += "- 이 코드는 단계별로 실행됩니다\n"
+                enhanced_explanation += "- 각 함수의 역할과 매개변수를 확인해보세요\n"
+                enhanced_explanation += "- 궁금한 부분이 있으면 Python 공식 문서를 참조하세요"
+            
+            elif skill_level == 'expert':
+                enhanced_explanation += "\n\n[전문가용 추가 정보]\n"
+                enhanced_explanation += "- 성능 최적화 고려사항을 검토해보세요\n"
+                enhanced_explanation += "- 확장성과 유지보수성을 고려한 구조입니다\n"
+                enhanced_explanation += "- 필요시 추가적인 디자인 패턴 적용을 고려하세요"
+            
+            # 프로젝트 컨텍스트별 추가 정보
+            if project_context == 'web_development':
+                enhanced_explanation += "\n\n[웹 개발 관련 팁]\n"
+                enhanced_explanation += "- 보안과 인증을 고려하세요\n"
+                enhanced_explanation += "- RESTful API 설계 원칙을 따르세요"
+            
+            elif project_context == 'data_science':
+                enhanced_explanation += "\n\n[데이터 사이언스 팁]\n"
+                enhanced_explanation += "- 데이터 검증과 전처리를 확인하세요\n"
+                enhanced_explanation += "- 결과 시각화를 고려해보세요"
+            
+            return enhanced_explanation
+            
+        except Exception as e:
+            logger.error(f"설명 개인화 실패: {e}")
+            return explanation
 
     async def generate_streaming_response(
         self, 

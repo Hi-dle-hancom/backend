@@ -1,9 +1,9 @@
-from fastapi import APIRouter, HTTPException, Depends, Request
+from fastapi import APIRouter, HTTPException, Depends, Request, Header
 from fastapi.responses import StreamingResponse as FastAPIStreamingResponse
 import time
 import json
 from datetime import datetime
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from app.schemas.code_generation import (
     CodeGenerationRequest, 
@@ -29,23 +29,32 @@ router = APIRouter()
 async def enhanced_generate_code(
     request: CodeGenerationRequest,
     http_request: Request,
+    authorization: str = Header(None),
     api_key: APIKeyModel = Depends(check_permission("code_generation")),
     rate_limit_check: APIKeyModel = Depends(check_rate_limit_dependency("/enhanced-generate", 30))
 ):
     """
-    안전성 검증을 포함한 강화된 Python 코드 생성 API
+    개인화된 안전성 검증을 포함한 강화된 Python 코드 생성 API
     
     특징:
+    - JWT 토큰 기반 사용자 개인화 지원
+    - 사용자 프로필 기반 맞춤형 코드 생성
     - 입력 안전성 검증 (악성 코드, 인젝션 공격 방지)
     - 생성된 코드 안전성 검증 (위험한 함수 호출 차단)
     - 코드 품질 평가 (0.0 - 1.0 점수)
     - Python 문법 검증
     - 상세한 보안 로깅
     
-    보안: API Key 인증 필수, 시간당 30회 제한 (더 엄격한 제한)
+    보안: API Key 인증 필수, 시간당 30회 제한
+    개인화: JWT 토큰 또는 userProfile 지원
     """
     start_time = time.time()
     client_ip = http_request.client.host if http_request.client else "unknown"
+    
+    # JWT 토큰 추출
+    access_token = None
+    if authorization and authorization.startswith("Bearer "):
+        access_token = authorization.split(" ")[1]
     
     # 보안 로깅
     api_monitor.log_request_start("POST", "/enhanced-generate", client_ip)
@@ -56,10 +65,12 @@ async def enhanced_generate_code(
         
         with response_timer.log_response_time("/enhanced-generate", "POST"):
             api_monitor.logger.info(
-                "강화된 Python 코드 생성 요청 수신",
+                "개인화된 강화 Python 코드 생성 요청 수신",
                 user_id=api_key.user_id,
                 question_length=len(request.user_question),
                 has_context=bool(request.code_context),
+                has_user_profile=bool(request.userProfile),
+                has_access_token=bool(access_token),
                 client_ip=client_ip,
                 security_level="enhanced"
             )
@@ -71,14 +82,10 @@ async def enhanced_generate_code(
             
             code_context = request.code_context.strip() if request.code_context else None
             
-            # 사용자 선호도 (향후 확장)
-            user_preferences = {
-                "skill_level": "intermediate",
-                "code_style": "balanced",
-                "project_type": "general"
-            }
+            # 개인화된 사용자 선호도 조회
+            user_preferences = await _get_enhanced_user_preferences(access_token, request.userProfile)
             
-            # 안전성 검증을 포함한 코드 생성
+            # 안전성 검증을 포함한 개인화된 코드 생성
             ai_start_time = time.time()
             result = await enhanced_ai_model.generate_code_with_safety(
                 prompt=user_question,
@@ -95,7 +102,8 @@ async def enhanced_generate_code(
                         "입력 안전성 검증 실패",
                         user_id=api_key.user_id,
                         safety_issues=result.get("safety_issues", []),
-                        client_ip=client_ip
+                        client_ip=client_ip,
+                        personalized=bool(access_token or request.userProfile)
                     )
                     
                     return {
@@ -105,6 +113,7 @@ async def enhanced_generate_code(
                         "safety_issues": result.get("safety_issues", []),
                         "generated_code": "",
                         "explanation": "",
+                        "personalized": bool(access_token or request.userProfile),
                         "security_info": {
                             "input_validated": False,
                             "code_validated": False,
@@ -119,6 +128,7 @@ async def enhanced_generate_code(
                     "error_type": result.get("error_type", "generation_error"),
                     "generated_code": "",
                     "explanation": "",
+                    "personalized": bool(access_token or request.userProfile),
                     "security_info": {
                         "input_validated": True,
                         "code_validated": False,
@@ -140,17 +150,20 @@ async def enhanced_generate_code(
                 additional_metrics={
                     "safety_validated": result["safety_validated"],
                     "quality_score": quality_score,
-                    "model_endpoint": result["metadata"]["model_endpoint"]
+                    "model_endpoint": result["metadata"]["model_endpoint"],
+                    "personalized": bool(access_token or request.userProfile),
+                    "user_skill_level": user_preferences.get("skill_level", "intermediate")
                 }
             )
             
             api_monitor.logger.info(
-                "강화된 Python 코드 생성 성공",
+                "개인화된 강화 Python 코드 생성 성공",
                 user_id=api_key.user_id,
                 ai_duration=ai_duration,
                 code_length=len(generated_code),
                 quality_score=quality_score,
-                safety_validated=result["safety_validated"]
+                safety_validated=result["safety_validated"],
+                personalized=bool(access_token or request.userProfile)
             )
             
             return {
@@ -158,6 +171,8 @@ async def enhanced_generate_code(
                 "generated_code": generated_code,
                 "explanation": explanation,
                 "quality_score": quality_score,
+                "personalized": bool(access_token or request.userProfile),
+                "user_skill_level": user_preferences.get("skill_level", "intermediate"),
                 "security_info": {
                     "input_validated": True,
                     "code_validated": result["safety_validated"],
@@ -167,6 +182,7 @@ async def enhanced_generate_code(
                 "metadata": {
                     "generation_time": ai_duration,
                     "model_info": result["metadata"],
+                    "user_preferences": user_preferences,
                     "timestamp": datetime.now().isoformat()
                 }
             }
@@ -177,7 +193,8 @@ async def enhanced_generate_code(
         api_monitor.log_error(e, {
             "user_id": api_key.user_id, 
             "endpoint": "/enhanced-generate",
-            "security_context": "enhanced_model"
+            "security_context": "enhanced_model",
+            "personalized": bool(access_token or request.userProfile)
         })
         return {
             "status": "error",
@@ -185,6 +202,7 @@ async def enhanced_generate_code(
             "error_type": "internal_error",
             "generated_code": "",
             "explanation": "",
+            "personalized": bool(access_token or request.userProfile),
             "security_info": {
                 "input_validated": False,
                 "code_validated": False,
@@ -194,6 +212,122 @@ async def enhanced_generate_code(
     finally:
         total_duration = time.time() - start_time
         api_monitor.log_request_end("POST", "/enhanced-generate", 200, total_duration, client_ip)
+
+async def _get_enhanced_user_preferences(access_token: Optional[str], user_profile) -> Dict[str, Any]:
+    """Enhanced 엔드포인트용 사용자 선호도 조회 (DB 설정 + userProfile 통합)"""
+    try:
+        # 기본 설정
+        preferences = {
+            "skill_level": "intermediate",
+            "code_style": "standard",
+            "project_context": "general_purpose",
+            "comment_style": "standard",
+            "error_handling": "basic",
+            "language_features": ["type_hints", "f_strings"],
+            "trigger_mode": "confirm",
+            "safety_level": "standard"  # Enhanced 전용
+        }
+        
+        # 1. JWT 토큰으로 DB 설정 조회 (우선순위 높음)
+        if access_token:
+            try:
+                from app.services.user_service import user_service
+                db_settings = await user_service.get_user_settings(access_token)
+                
+                if db_settings:
+                    # DB 설정 → 선호도 매핑 (기존 코드 재사용)
+                    for setting in db_settings:
+                        option_id = setting.get('option_id')
+                        
+                        # Python 스킬 수준 (ID: 1-4)
+                        if option_id in [1, 2, 3, 4]:
+                            skill_map = {1: 'beginner', 2: 'intermediate', 3: 'advanced', 4: 'expert'}
+                            preferences['skill_level'] = skill_map.get(option_id, 'intermediate')
+                        
+                        # 코드 출력 구조 (ID: 5-8)
+                        elif option_id in [5, 6, 7, 8]:
+                            output_map = {5: 'minimal', 6: 'standard', 7: 'detailed', 8: 'comprehensive'}
+                            preferences['code_style'] = output_map.get(option_id, 'standard')
+                        
+                        # 설명 스타일 (ID: 9-12)
+                        elif option_id in [9, 10, 11, 12]:
+                            explanation_map = {9: 'brief', 10: 'standard', 11: 'detailed', 12: 'educational'}
+                            preferences['comment_style'] = explanation_map.get(option_id, 'standard')
+                        
+                        # 프로젝트 컨텍스트 (ID: 13-16)
+                        elif option_id in [13, 14, 15, 16]:
+                            context_map = {13: 'web_development', 14: 'data_science', 15: 'automation', 16: 'general_purpose'}
+                            preferences['project_context'] = context_map.get(option_id, 'general_purpose')
+                        
+                        # 선호 언어 기능 (ID: 21-24)
+                        elif option_id in [21, 22, 23, 24]:
+                            if 'language_features' not in preferences:
+                                preferences['language_features'] = []
+                            feature_map = {21: 'type_hints', 22: 'dataclasses', 23: 'async_await', 24: 'f_strings'}
+                            if option_id in feature_map:
+                                preferences['language_features'].append(feature_map[option_id])
+                        
+                        # 에러 처리 선호도 (ID: 25-27)
+                        elif option_id in [25, 26, 27]:
+                            error_map = {25: 'basic', 26: 'detailed', 27: 'robust'}
+                            preferences['error_handling'] = error_map.get(option_id, 'basic')
+                    
+                    logger.info(f"Enhanced 엔드포인트: DB 설정 로드 완료 - {len(db_settings)}개")
+            
+            except Exception as e:
+                logger.warning(f"Enhanced 엔드포인트: DB 설정 조회 실패, 기본값 사용 - {e}")
+        
+        # 2. userProfile로 일부 설정 오버라이드 (Frontend에서 전송된 경우)
+        if user_profile:
+            # camelCase → snake_case 매핑 (형식 통일)
+            if hasattr(user_profile, 'pythonSkillLevel'):
+                skill_map = {'beginner': 'beginner', 'intermediate': 'intermediate', 'advanced': 'advanced', 'expert': 'expert'}
+                preferences['skill_level'] = skill_map.get(user_profile.pythonSkillLevel, 'intermediate')
+            
+            if hasattr(user_profile, 'codeOutputStructure'):
+                output_map = {'minimal': 'minimal', 'standard': 'standard', 'detailed': 'detailed', 'comprehensive': 'comprehensive'}
+                preferences['code_style'] = output_map.get(user_profile.codeOutputStructure, 'standard')
+            
+            if hasattr(user_profile, 'explanationStyle'):
+                style_map = {'brief': 'brief', 'standard': 'standard', 'detailed': 'detailed', 'educational': 'educational'}
+                preferences['comment_style'] = style_map.get(user_profile.explanationStyle, 'standard')
+            
+            if hasattr(user_profile, 'projectContext'):
+                context_map = {'web_development': 'web_development', 'data_science': 'data_science', 'automation': 'automation', 'general_purpose': 'general_purpose'}
+                preferences['project_context'] = context_map.get(user_profile.projectContext, 'general_purpose')
+            
+            if hasattr(user_profile, 'errorHandlingPreference'):
+                error_map = {'basic': 'basic', 'detailed': 'detailed', 'robust': 'robust'}
+                preferences['error_handling'] = error_map.get(user_profile.errorHandlingPreference, 'basic')
+            
+            if hasattr(user_profile, 'preferredLanguageFeatures'):
+                preferences['language_features'] = user_profile.preferredLanguageFeatures or ['type_hints', 'f_strings']
+            
+            logger.info("Enhanced 엔드포인트: userProfile 오버라이드 적용")
+        
+        # Enhanced 전용 안전성 수준 설정
+        if preferences['skill_level'] in ['advanced', 'expert']:
+            preferences['safety_level'] = 'enhanced'
+        elif preferences['skill_level'] == 'beginner':
+            preferences['safety_level'] = 'strict'
+        else:
+            preferences['safety_level'] = 'standard'
+        
+        return preferences
+        
+    except Exception as e:
+        logger.error(f"Enhanced 사용자 선호도 조회 실패: {e}")
+        # 안전한 기본값 반환
+        return {
+            "skill_level": "intermediate",
+            "code_style": "standard", 
+            "project_context": "general_purpose",
+            "comment_style": "standard",
+            "error_handling": "basic",
+            "language_features": ["type_hints", "f_strings"],
+            "trigger_mode": "confirm",
+            "safety_level": "standard"
+        }
 
 @router.post("/enhanced-stream-generate")
 async def enhanced_stream_generate_code(

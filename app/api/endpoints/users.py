@@ -1,4 +1,7 @@
-from fastapi import APIRouter, HTTPException, status, Header
+from fastapi import APIRouter, HTTPException, status, Header, Depends
+from fastapi.security import HTTPBearer
+import httpx
+import json
 from typing import List, Dict, Any, Optional
 from app.services.user_service import user_service
 from app.schemas.users import (
@@ -6,39 +9,61 @@ from app.schemas.users import (
     UserTokenResponse, 
     UserSettingsRequest,
     UserProfileRequest,
-    UserProfileResponse
+    UserProfileResponse,
+    AuthResponse
 )
 from app.core.logging_config import api_monitor
+from app.core.config import settings
+from app.core.structured_logger import log_api_request, log_api_response, log_user_action, log_system_event
 
 router = APIRouter()
+security = HTTPBearer()
 
-@router.post("/login", response_model=UserTokenResponse)
-async def user_login(user_data: UserLoginRequest):
+@router.post("/login", response_model=AuthResponse)
+async def login_user(user_data: UserLoginRequest):
     """
-    사용자 로그인 또는 자동 회원가입
-    DB Module에 요청을 전달하여 JWT 토큰을 발급받습니다.
+    온보딩 사용자 로그인/등록
+    이메일과 사용자명을 받아 DB Module에 전달하고 JWT 토큰을 반환합니다.
     """
     try:
-        result = await user_service.login_or_register(
-            email=user_data.email,
-            username=user_data.username
-        )
+        log_user_action("로그인 요청", user_data.email, details={"username": user_data.username})
         
-        if result:
-            api_monitor.logger.info(f"사용자 로그인 성공: {user_data.email}")
-            return UserTokenResponse(**result)
-        else:
-            api_monitor.logger.error(f"사용자 로그인 실패: {user_data.email}")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="로그인에 실패했습니다. DB Module 서버 상태를 확인해주세요."
+        # DB Module에 로그인/등록 요청
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{settings.DB_MODULE_URL}/login",
+                json={
+                    "email": user_data.email,
+                    "username": user_data.username
+                },
+                timeout=settings.DB_MODULE_TIMEOUT
             )
             
+        if response.status_code == 200:
+            auth_data = response.json()
+            log_user_action("로그인 성공", user_data.email, details={"token_type": auth_data.get("token_type")})
+            return AuthResponse(
+                access_token=auth_data["access_token"],
+                token_type=auth_data["token_type"]
+            )
+        else:
+            log_user_action("로그인 실패", user_data.email, details={"status_code": response.status_code})
+            raise HTTPException(
+                status_code=response.status_code,
+                detail="사용자 인증에 실패했습니다."
+            )
+            
+    except httpx.TimeoutException:
+        log_system_event("DB Module 연결 타임아웃", "failed", details={"url": settings.DB_MODULE_URL})
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="사용자 인증 서비스가 일시적으로 이용불가합니다."
+        )
     except Exception as e:
-        api_monitor.log_error(e, {"email": user_data.email})
+        log_system_event("사용자 로그인 오류", "error", details={"error": str(e)})
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="서버 내부 오류가 발생했습니다."
+            detail="로그인 처리 중 오류가 발생했습니다."
         )
 
 @router.get("/me/settings")
@@ -118,37 +143,81 @@ async def update_my_settings(
         )
 
 @router.get("/me")
-async def get_my_info(authorization: str = Header(...)):
+async def get_my_profile(authorization: str = Depends(security)):
     """
-    현재 사용자 정보 조회
+    현재 사용자의 프로필 정보 조회
     """
     try:
-        if not authorization.startswith("Bearer "):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="잘못된 인증 헤더 형식입니다."
-            )
+        token = authorization.credentials
         
-        access_token = authorization.split(" ")[1]
-        
-        user_info = await user_service.get_user_info(access_token)
-        
-        if user_info:
-            api_monitor.logger.info("사용자 정보 조회 성공")
-            return user_info
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="사용자 정보를 찾을 수 없습니다."
+        # DB Module에서 사용자 정보 조회
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{settings.DB_MODULE_URL}/users/me",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=settings.DB_MODULE_TIMEOUT
             )
             
-    except HTTPException:
-        raise
+        if response.status_code == 200:
+            user_data = response.json()
+            log_user_action("프로필 조회 성공", user_data.get("email", "unknown"), details={})
+            return user_data
+        else:
+            raise HTTPException(
+                status_code=response.status_code,
+                detail="사용자 정보를 가져올 수 없습니다."
+            )
+            
+    except httpx.TimeoutException:
+        log_system_event("DB Module 연결 타임아웃", "failed", details={"url": settings.DB_MODULE_URL})
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="사용자 정보 서비스가 일시적으로 이용불가합니다."
+        )
     except Exception as e:
-        api_monitor.log_error(e, {"operation": "get_user_info"})
+        log_system_event("프로필 조회 오류", "error", details={"error": str(e)})
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="사용자 정보 조회 중 오류가 발생했습니다."
+        )
+
+@router.get("/settings")
+async def get_user_settings(authorization: str = Depends(security)):
+    """
+    현재 사용자의 설정 조회
+    """
+    try:
+        token = authorization.credentials
+        
+        # DB Module에서 사용자 설정 조회
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{settings.DB_MODULE_URL}/users/me/settings",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=settings.DB_MODULE_TIMEOUT
+            )
+            
+        if response.status_code == 200:
+            settings_data = response.json()
+            log_user_action("설정 조회 성공", "unknown", details={"settings_count": len(settings_data)})
+            return settings_data
+        else:
+            raise HTTPException(
+                status_code=response.status_code,
+                detail="사용자 설정을 가져올 수 없습니다."
+            )
+            
+    except httpx.TimeoutException:
+        log_system_event("DB Module 연결 타임아웃", "failed", details={"url": settings.DB_MODULE_URL})
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="설정 조회 서비스가 일시적으로 이용불가합니다."
+        )
+    except Exception as e:
+        log_system_event("설정 조회 오류", "error", details={"error": str(e)})
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="설정 조회 중 오류가 발생했습니다."
         )
 
 @router.get("/settings/options")
@@ -183,62 +252,58 @@ async def get_setting_options(authorization: str = Header(...)):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="설정 옵션 조회 중 오류가 발생했습니다."
-        ) 
+        )
 
-@router.post("/profile", response_model=UserProfileResponse)
+@router.post("/profile")
 async def save_user_profile(
     profile_request: UserProfileRequest,
-    authorization: str = Header(...)
+    authorization: str = Depends(security)
 ):
     """
-    VSCode Extension 온보딩 완료 시 사용자 프로필 저장
-    온보딩에서 수집한 사용자 특징을 DB의 설정 옵션으로 저장합니다.
+    온보딩 사용자 프로필 저장
+    JWT 토큰을 검증하고 프로필 데이터와 설정 매핑을 DB에 저장합니다.
     """
     try:
-        if not authorization.startswith("Bearer "):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="잘못된 인증 헤더 형식입니다."
-            )
+        # JWT 토큰 추출
+        token = authorization.credentials
         
-        access_token = authorization.split(" ")[1]
+        log_user_action("프로필 저장 요청", "unknown", details={
+            "profile_data_keys": list(profile_request.profile_data.keys()) if profile_request.profile_data else [],
+            "settings_count": len(profile_request.settings_mapping)
+        })
         
-        # 사용자 프로필 데이터를 DB에 저장
-        success = await user_service.save_user_profile(
-            access_token=access_token,
-            profile_data=profile_request.profile_data,
-            option_ids=profile_request.settings_mapping
-        )
-        
-        if success:
-            api_monitor.logger.info(
-                "사용자 프로필 저장 성공",
-                extra={
-                    "profile_data": profile_request.profile_data,
-                    "settings_count": len(profile_request.settings_mapping)
-                }
+        # DB Module에 설정 저장 요청
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{settings.DB_MODULE_URL}/users/me/settings",
+                json={
+                    "option_ids": profile_request.settings_mapping
+                },
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json"
+                },
+                timeout=settings.DB_MODULE_TIMEOUT
             )
-            return UserProfileResponse(
-                success=True,
-                message="사용자 프로필이 성공적으로 저장되었습니다.",
-                saved_settings_count=len(profile_request.settings_mapping)
-            )
+            
+        if response.status_code == 204:
+            log_user_action("프로필 저장 성공", "unknown", details={"settings_count": len(profile_request.settings_mapping)})
+            return {"message": "프로필이 성공적으로 저장되었습니다."}
         else:
+            log_user_action("프로필 저장 실패", "unknown", details={"status_code": response.status_code})
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=response.status_code,
                 detail="프로필 저장에 실패했습니다."
             )
             
-    except HTTPException:
-        raise
-    except Exception as e:
-        api_monitor.log_error(
-            e, 
-            {
-                "operation": "save_user_profile",
-                "profile_data": profile_request.profile_data
-            }
+    except httpx.TimeoutException:
+        log_system_event("DB Module 연결 타임아웃", "failed", details={"url": settings.DB_MODULE_URL})
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="프로필 저장 서비스가 일시적으로 이용불가합니다."
         )
+    except Exception as e:
+        log_system_event("프로필 저장 오류", "error", details={"error": str(e)})
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="프로필 저장 중 오류가 발생했습니다."

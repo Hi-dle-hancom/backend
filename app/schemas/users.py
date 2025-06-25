@@ -11,6 +11,9 @@ class UserTokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
 
+# 온보딩용 AuthResponse (UserTokenResponse와 동일)
+AuthResponse = UserTokenResponse
+
 class UserSettingsRequest(BaseModel):
     """사용자 설정 업데이트 요청 모델"""
     option_ids: List[int]

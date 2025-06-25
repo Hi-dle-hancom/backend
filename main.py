@@ -18,7 +18,8 @@ setup_logging()
 
 # 환경 변수 검증 (시작 시)
 if not validate_environment_on_startup():
-    api_monitor.logger.critical("🚨 Critical 환경 변수 오류로 인해 서버를 시작할 수 없습니다!")
+    from app.core.structured_logger import log_system_event
+    log_system_event("환경 변수 검증", "failed", details={"message": "Critical 환경 변수 오류로 인해 서버를 시작할 수 없습니다!"})
     import sys
     sys.exit(1)
 
@@ -28,6 +29,17 @@ async def lifespan(app: FastAPI):
     """애플리케이션 시작/종료 시 실행되는 로직"""
     # 시작 시 실행
     api_monitor.logger.info("HAPA 백엔드 서버 시작")
+    
+    # Redis 연결 초기화
+    try:
+        from app.services.redis_service import init_redis
+        redis_connected = await init_redis()
+        if redis_connected:
+            api_monitor.logger.info("Redis 캐시 서비스 초기화 완료")
+        else:
+            api_monitor.logger.warning("Redis 연결 실패, 파일 캐시 사용")
+    except Exception as e:
+        api_monitor.logger.warning(f"Redis 초기화 실패, 파일 캐시 사용: {e}")
     
     # 데모 API Key 생성 (개발 환경에서만)
     if settings.DEBUG:
@@ -41,6 +53,13 @@ async def lifespan(app: FastAPI):
     yield
     
     # 종료 시 실행
+    try:
+        from app.services.redis_service import close_redis
+        await close_redis()
+        api_monitor.logger.info("Redis 연결 종료")
+    except Exception as e:
+        api_monitor.logger.warning(f"Redis 종료 실패: {e}")
+    
     api_monitor.logger.info("HAPA 백엔드 서버 종료")
 
 # FastAPI 애플리케이션 인스턴스 생성 (최적화됨)
@@ -175,6 +194,9 @@ app.include_router(api_router, prefix=settings.API_V1_PREFIX)
 
 # 메트릭 라우터 추가 (API 버전 prefix 없이)
 from app.api.api import add_metrics_router
+from dotenv import load_dotenv
+load_dotenv(".env.production")
+
 add_metrics_router(app)
 
 # 루트 엔드포인트 설정 (테스트용)

@@ -100,8 +100,13 @@ class Settings(BaseSettings):
     DB_MODULE_URL: str = "http://localhost:8001"
     DB_MODULE_TIMEOUT: int = 10
     
+    # 온보딩 테스트 설정 (선택적)
+    ENABLE_ONBOARDING_TEST: Optional[bool] = None
+    ONBOARDING_TEST_USER: Optional[str] = None
+    TEST_USER_PREFIX: Optional[str] = None
+    
     model_config = {
-        "env_file": ".env",
+        "env_file": [".env.production", ".env"],
         "env_file_encoding": "utf-8",
         "case_sensitive": True
     }
