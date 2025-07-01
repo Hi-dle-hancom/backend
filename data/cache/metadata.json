@@ -1,9 +1,12 @@
 {
+  "cache_version": "1.0",
+  "last_cleared": "never",
+  "total_entries": 0,
   "entries": {},
   "stats": {
     "hits": 0,
-    "misses": 13,
+    "misses": 0,
     "total_entries": 0,
-    "last_cleanup": 1750831820.761633
+    "last_cleanup": 1751356395.790682
   }
 }

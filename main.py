@@ -1,242 +1,272 @@
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, PlainTextResponse
-import uvicorn
+"""
+HAPA (Hancom AI Python Assistant) Backend
+메인 애플리케이션 엔트리 포인트
+- vLLM 멀티 LoRA 서버 통합
+- Enhanced AI 모델 서비스 지원
+- 실시간 스트리밍 코드 생성
+"""
+
 import time
 from contextlib import asynccontextmanager
-from typing import Any, Dict
-from app.api.api import api_router
+
+import uvicorn
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.responses import JSONResponse
+
+# Core imports
 from app.core.config import settings
-from app.schemas.code_generation import ErrorResponse, ValidationErrorResponse
-from app.core.logging_config import setup_logging, api_monitor, performance_monitor, get_prometheus_metrics
-from app.core.security import create_demo_api_key
-from app.services.environment_validator import validate_environment_on_startup, get_environment_health
+from app.core.logging_config import setup_logging
+from app.core.structured_logger import StructuredLogger
 
-# 로깅 시스템 초기화
-setup_logging()
+# API imports
+from app.api.api import api_router
 
-# 환경 변수 검증 (시작 시)
-if not validate_environment_on_startup():
-    from app.core.structured_logger import log_system_event
-    log_system_event("환경 변수 검증", "failed", details={"message": "Critical 환경 변수 오류로 인해 서버를 시작할 수 없습니다!"})
-    import sys
-    sys.exit(1)
+# Service imports
+from app.services.enhanced_ai_model import enhanced_ai_service
+from app.services.vllm_integration_service import vllm_service
+from app.middleware.enhanced_logging_middleware import EnhancedLoggingMiddleware
 
-# 애플리케이션 수명주기 관리
+# Exception handlers
+from app.api.endpoints.error_monitoring import setup_error_handlers
+
+logger = StructuredLogger("main")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """애플리케이션 시작/종료 시 실행되는 로직"""
-    # 시작 시 실행
-    api_monitor.logger.info("HAPA 백엔드 서버 시작")
-    
-    # Redis 연결 초기화
+    """
+    애플리케이션 라이프사이클 관리
+    - 시작시: Enhanced AI 서비스 초기화
+    - 종료시: 연결 정리
+    """
+    # === 시작 단계 ===
+    logger.log_system_event("HAPA 백엔드 시작", "started", {
+        "environment": settings.ENVIRONMENT,
+        "vllm_server": settings.VLLM_SERVER_URL,
+        "debug_mode": settings.DEBUG
+    })
+
     try:
-        from app.services.redis_service import init_redis
-        redis_connected = await init_redis()
-        if redis_connected:
-            api_monitor.logger.info("Redis 캐시 서비스 초기화 완료")
+        # Enhanced AI 서비스 초기화
+        logger.log_system_event("Enhanced AI 서비스 초기화", "started")
+        await enhanced_ai_service.initialize()
+
+        # vLLM 서버 연결 확인
+        health_status = await vllm_service.check_health()
+        if health_status["status"] == "healthy":
+            logger.log_system_event("vLLM 서버 연결", "success", health_status)
         else:
-            api_monitor.logger.warning("Redis 연결 실패, 파일 캐시 사용")
+            logger.log_system_event("vLLM 서버 연결", "failed", health_status)
+
+        # 백엔드 상태 조회
+        backend_status = await enhanced_ai_service.get_backend_status()
+        logger.log_system_event("AI 백엔드 상태", "success", backend_status)
+
+        logger.log_system_event("HAPA 백엔드 초기화", "completed", {
+            "vllm_available": backend_status["backends"]["vllm"]["available"],
+            "legacy_available": backend_status["backends"]["legacy"]["available"],
+            "current_backend": backend_status["current_backend"]
+        })
+
     except Exception as e:
-        api_monitor.logger.warning(f"Redis 초기화 실패, 파일 캐시 사용: {e}")
-    
-    # 데모 API Key 생성 (개발 환경에서만)
-    if settings.DEBUG:
-        demo_key = create_demo_api_key()
-        if demo_key:
-            api_monitor.logger.info(
-                "데모 API Key 사용 가능", 
-                api_key=demo_key["api_key"]
-            )
-    
+        logger.log_error(e, "HAPA 백엔드 초기화")
+        # 초기화 실패해도 서버는 시작 (graceful degradation)
+
     yield
-    
-    # 종료 시 실행
+
+    # === 종료 단계 ===
+    logger.log_system_event("HAPA 백엔드 종료", "started")
+
     try:
-        from app.services.redis_service import close_redis
-        await close_redis()
-        api_monitor.logger.info("Redis 연결 종료")
+        # Enhanced AI 서비스 정리
+        await enhanced_ai_service.close()
+
+        # vLLM 서비스 정리
+        await vllm_service.close()
+
+        logger.log_system_event("HAPA 백엔드 종료", "completed")
+
     except Exception as e:
-        api_monitor.logger.warning(f"Redis 종료 실패: {e}")
-    
-    api_monitor.logger.info("HAPA 백엔드 서버 종료")
+        logger.log_error(e, "HAPA 백엔드 종료")
 
-# FastAPI 애플리케이션 인스턴스 생성 (최적화됨)
-app = FastAPI(
-    title="HAPA (Hancom AI Python Assistant) API",
-    description="VSCode 확장을 위한 최적화된 AI 코딩 어시스턴트 백엔드 API",
-    version="0.4.0",
-    lifespan=lifespan
-)
 
-# CORS 설정
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # 개발 환경에서는 모든 오리진 허용, 프로덕션에서는 특정 도메인으로 제한
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# 유효성 검사 오류 핸들러 (422 오류)
-@app.exception_handler(RequestValidationError)
-async def validation_exception_handler(request: Request, exc: RequestValidationError):
+def create_application() -> FastAPI:
     """
-    Pydantic 유효성 검사 실패 시 표준 오류 응답을 반환합니다.
+    FastAPI 애플리케이션 생성 및 설정
     """
-    api_monitor.logger.warning(
-        f"유효성 검사 실패: {request.url.path}",
-        errors=exc.errors(),
-        client_ip=request.client.host if request.client else "unknown"
-    )
-    
-    # 필드별 오류 메시지 정리
-    error_details = {}
-    for error in exc.errors():
-        field_path = ".".join(str(loc) for loc in error["loc"][1:])  # 'body' 제외
-        if field_path not in error_details:
-            error_details[field_path] = []
-        error_details[field_path].append(error["msg"])
-    
-    # 주요 오류 메시지 추출
-    main_error_msg = exc.errors()[0]["msg"] if exc.errors() else "유효성 검사에 실패했습니다."
-    
-    error_response = ValidationErrorResponse(
-        error_message=f"요청 데이터 유효성 검사에 실패했습니다: {main_error_msg}",
-        error_details=error_details
-    )
-    
-    return JSONResponse(
-        status_code=422,
-        content=error_response.model_dump()
+    # 로깅 설정
+    setup_logging()
+
+    # FastAPI 인스턴스 생성
+    app = FastAPI(
+        title=settings.PROJECT_NAME,
+        version="1.0.0",
+        description="""
+        🚀 **HAPA (Hancom AI Python Assistant) API**
+
+        **새로운 기능:**
+        - 🤖 vLLM 멀티 LoRA 서버 통합
+        - 📡 실시간 스트리밍 코드 생성
+        - 🌐 한국어/영어 자동 번역
+        - 🔄 듀얼 백엔드 (vLLM + Legacy AI)
+        - 📊 성능 모니터링 및 분석
+
+        **지원 모델:**
+        - `autocomplete`: 코드 자동완성
+        - `prompt`: 일반 코드 생성
+        - `comment`: 주석/문서 생성
+        - `error_fix`: 버그 수정
+        """,
+        openapi_url=(
+            f"{settings.API_V1_PREFIX}/openapi.json"
+            if settings.DEBUG else None
+        ),
+        docs_url="/docs" if settings.DEBUG else None,
+        redoc_url="/redoc" if settings.DEBUG else None,
+        lifespan=lifespan
     )
 
-# HTTP 예외 핸들러
-@app.exception_handler(HTTPException)
-async def http_exception_handler(request: Request, exc: HTTPException):
-    """
-    HTTPException 발생 시 표준 오류 응답을 반환합니다.
-    """
-    api_monitor.logger.warning(
-        f"HTTP 예외 발생: {request.url.path}",
-        status_code=exc.status_code,
-        detail=exc.detail,
-        client_ip=request.client.host if request.client else "unknown"
-    )
-    
-    # 상태 코드별 오류 코드 매핑
-    error_code_mapping = {
-        400: "BAD_REQUEST",
-        401: "UNAUTHORIZED", 
-        403: "FORBIDDEN",
-        404: "NOT_FOUND",
-        405: "METHOD_NOT_ALLOWED",
-        409: "CONFLICT",
-        429: "TOO_MANY_REQUESTS",
-        500: "INTERNAL_SERVER_ERROR",
-        502: "BAD_GATEWAY",
-        503: "SERVICE_UNAVAILABLE"
-    }
-    
-    error_response = ErrorResponse(
-        error_message=str(exc.detail),
-        error_code=error_code_mapping.get(exc.status_code, "HTTP_ERROR")
-    )
-    
-    return JSONResponse(
-        status_code=exc.status_code,
-        content=error_response.model_dump()
+    # CORS 미들웨어 설정
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.CORS_ORIGINS,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"]
     )
 
-# 일반 예외 핸들러 (500 오류)
-@app.exception_handler(Exception)
-async def general_exception_handler(request: Request, exc: Exception):
-    """
-    예상치 못한 모든 내부 서버 오류를 처리합니다.
-    민감한 정보가 노출되지 않도록 일반적인 오류 메시지를 반환합니다.
-    """
-    api_monitor.log_error(
-        exc,
-        {
-            "request_path": str(request.url.path),
-            "request_method": request.method,
-            "client_ip": request.client.host if request.client else "unknown"
-        }
-    )
-    
-    # 개발 환경에서는 상세한 오류 정보 포함
-    if settings.DEBUG:
-        error_message = f"내부 서버 오류가 발생했습니다: {type(exc).__name__}: {str(exc)}"
-        error_details = {
-            "exception_type": type(exc).__name__,
-            "exception_message": str(exc),
-            "request_path": str(request.url.path),
-            "request_method": request.method
-        }
-    else:
-        error_message = "내부 서버 오류가 발생했습니다. 잠시 후 다시 시도해주세요."
-        error_details = None
-    
-    error_response = ErrorResponse(
-        error_message=error_message,
-        error_code="INTERNAL_SERVER_ERROR",
-        error_details=error_details
-    )
-    
-    return JSONResponse(
-        status_code=500,
-        content=error_response.model_dump()
-    )
+    # Enhanced 로깅 미들웨어 추가
+    app.add_middleware(EnhancedLoggingMiddleware)
 
-# API 라우터 추가
-app.include_router(api_router, prefix=settings.API_V1_PREFIX)
+    # Trusted Host 미들웨어 (운영환경)
+    if not settings.DEBUG:
+        app.add_middleware(
+            TrustedHostMiddleware,
+            allowed_hosts=settings.ALLOWED_HOSTS
+        )
 
-# 메트릭 라우터 추가 (API 버전 prefix 없이)
-from app.api.api import add_metrics_router
-from dotenv import load_dotenv
-load_dotenv(".env.production")
+    # API 라우터 포함
+    app.include_router(api_router, prefix=settings.API_V1_PREFIX)
 
-add_metrics_router(app)
+    # 에러 핸들러 설정
+    setup_error_handlers(app)
 
-# 루트 엔드포인트 설정 (테스트용)
-@app.get("/")
-async def root():
-    return {"message": "AI Coding Assistant Backend API is running!"}
+    # 글로벌 미들웨어 - 요청 처리 시간 측정
+    @app.middleware("http")
+    async def add_process_time_header(request: Request, call_next):
+        start_time = time.time()
+        response = await call_next(request)
+        process_time = time.time() - start_time
+        response.headers["X-Process-Time"] = str(process_time)
+        return response
 
-# 헬스 체크 엔드포인트 (강화됨)
-@app.get("/health")
-async def health_check():
-    """
-    서버 상태를 확인하는 헬스 체크 엔드포인트입니다.
-    """
-    health_status = performance_monitor.get_health_status()
-    environment_health = get_environment_health()
-    
-    return {
-        "status": health_status["status"],
-        "message": f"HAPA 백엔드 API is {health_status['status']}",
-        "version": "0.4.0",
-        "timestamp": health_status["timestamp"],
-        "system_info": health_status["system"],
-        "performance_metrics": health_status["application"],
-        "environment_validation": environment_health
-    }
+    # 루트 엔드포인트 - vLLM 통합 상태 표시
+    @app.get("/", tags=["Root"])
+    async def root():
+        """
+        HAPA 백엔드 루트 엔드포인트
+        vLLM 통합 상태 및 서비스 정보 제공
+        """
+        try:
+            # 백엔드 상태 조회
+            backend_status = await enhanced_ai_service.get_backend_status()
 
-# 성능 통계 엔드포인트
-@app.get("/stats")
-async def performance_stats():
-    """
-    성능 통계 정보를 반환합니다.
-    """
-    from app.services.performance_profiler import response_timer
-    return {
-        "performance": performance_monitor.get_health_status(),
-        "response_times": response_timer.get_performance_stats()
-    }
+            return {
+                "service": "HAPA (Hancom AI Python Assistant)",
+                "version": "1.0.0",
+                "status": "running",
+                "timestamp": time.time(),
+                "environment": settings.ENVIRONMENT,
+                "ai_backends": {
+                    "current": backend_status["current_backend"],
+                    "vllm": {
+                        "available": backend_status["backends"]["vllm"]["available"],
+                        "server_url": settings.VLLM_SERVER_URL
+                    },
+                    "legacy": {
+                        "available": backend_status["backends"]["legacy"]["available"]
+                    }
+                },
+                "features": [
+                    "실시간 스트리밍 코드 생성",
+                    "한국어/영어 자동 번역",
+                    "8가지 코드 생성 모델",
+                    "듀얼 백엔드 지원",
+                    "자동 페일오버"
+                ],
+                "endpoints": {
+                    "docs": "/docs",
+                    "health": "/api/v1/code/health",
+                    "streaming": "/api/v1/code/generate/stream",
+                    "sync": "/api/v1/code/generate"
+                }
+            }
 
-# 메트릭 엔드포인트는 별도 모듈에서 관리됨 (app/api/endpoints/metrics.py)
+        except Exception as e:
+            logger.log_error(e, "루트 엔드포인트")
+            return {
+                "service": "HAPA (Hancom AI Python Assistant)",
+                "status": "degraded",
+                "error": "백엔드 상태 조회 실패"
+            }
 
-# 서버 실행을 위한 코드 (직접 실행 시 사용)
+    # vLLM 통합 상태 엔드포인트
+    @app.get("/vllm/status", tags=["vLLM Integration"])
+    async def vllm_status():
+        """
+        vLLM 멀티 LoRA 서버 통합 상태 상세 조회
+        """
+        try:
+            # vLLM 서버 상태
+            health_status = await vllm_service.check_health()
+
+            # 사용 가능한 모델
+            models_info = await vllm_service.get_available_models()
+
+            # 백엔드 상태
+            backend_status = await enhanced_ai_service.get_backend_status()
+
+            return {
+                "vllm_integration": {
+                    "server_health": health_status,
+                    "available_models": models_info.get("available_models", []),
+                    "server_details": models_info,
+                    "backend_status": backend_status["backends"]["vllm"],
+                    "configuration": {
+                        "server_url": settings.VLLM_SERVER_URL,
+                        "timeout": settings.VLLM_TIMEOUT_SECONDS,
+                        "max_retries": settings.VLLM_MAX_RETRIES,
+                        "connection_pool_size": settings.VLLM_CONNECTION_POOL_SIZE
+                    }
+                },
+                "timestamp": time.time()
+            }
+
+        except Exception as e:
+            logger.log_error(e, "vLLM 상태 조회")
+            return JSONResponse(
+                status_code=500,
+                content={"error": "vLLM 상태 조회 실패", "details": str(e)}
+            )
+
+    # 간단한 헬스 체크 엔드포인트 추가
+    @app.get("/health", tags=["Health"])
+    async def health_check():
+        """서비스 상태 확인"""
+        return {"status": "healthy", "timestamp": time.time()}
+
+    return app
+
+
+app = create_application()
+
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True) 
+    uvicorn.run(
+        "main:app",
+        host=settings.HOST,
+        port=settings.PORT,
+        reload=settings.DEBUG,
+        log_level=settings.LOG_LEVEL.lower(),
+    ) 
