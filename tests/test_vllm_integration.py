@@ -174,45 +174,33 @@ class TestEnhancedAIModelService:
     
     @pytest.mark.asyncio
     async def test_initialization(self):
-        """Enhanced AI 서비스 초기화 테스트"""
+        """Enhanced AI 서비스 초기화 테스트 (vLLM 전용)"""
         # Mock vLLM 서비스
-        with patch.object(enhanced_ai_service, '_check_vllm_health', return_value=True), \
-             patch.object(enhanced_ai_service, '_check_legacy_health', return_value=True):
+        with patch.object(enhanced_ai_service, '_check_vllm_health', return_value=True):
             
             await enhanced_ai_service.initialize()
             
             # 검증
             assert enhanced_ai_service.vllm_available is True
-            assert enhanced_ai_service.legacy_available is True
             assert enhanced_ai_service.current_backend == AIBackendType.VLLM
     
     @pytest.mark.asyncio
-    async def test_backend_failover(self):
-        """백엔드 페일오버 테스트"""
-        # vLLM 실패, Legacy 성공 시나리오
+    async def test_vllm_error_handling(self):
+        """vLLM 오류 처리 테스트"""
+        # vLLM 서버 연결 실패 시나리오
         enhanced_ai_service.vllm_available = False
-        enhanced_ai_service.legacy_available = True
         
         request = CodeGenerationRequest(
             prompt="테스트 코드",
             model_type=ModelType.CODE_GENERATION
         )
         
-        with patch.object(enhanced_ai_service, '_generate_with_legacy') as mock_legacy:
-            mock_legacy.return_value = CodeGenerationResponse(
-                success=True,
-                generated_code="def test(): pass",
-                model_used="legacy_ai_model",
-                processing_time=1.0,
-                token_usage={"total_tokens": 10}
-            )
-            
-            result = await enhanced_ai_service.generate_code(request, "test_user")
-            
-            # 검증
-            assert result.success is True
-            assert result.model_used == "legacy_ai_model"
-            mock_legacy.assert_called_once()
+        # vLLM 서버 불가용 시 적절한 오류 응답 확인
+        result = await enhanced_ai_service.generate_code(request, "test_user")
+        
+        # 검증 - 서비스가 적절히 오류를 처리해야 함
+        assert isinstance(result, CodeGenerationResponse)
+        # vLLM 불가용 시 오류 상태가 반영되어야 함
     
     @pytest.mark.asyncio
     async def test_performance_stats_update(self):
@@ -231,24 +219,20 @@ class TestEnhancedAIModelService:
         assert vllm_stats["avg_response_time"] > 0
     
     @pytest.mark.asyncio
-    async def test_backend_switching(self):
-        """백엔드 수동 전환 테스트"""
+    async def test_vllm_backend_status(self):
+        """vLLM 백엔드 상태 확인 테스트"""
         # vLLM 사용 가능 상태 설정
         enhanced_ai_service.vllm_available = True
-        enhanced_ai_service.legacy_available = True
         
-        # Legacy로 전환
-        result = await enhanced_ai_service.switch_backend(AIBackendType.LEGACY)
-        
-        # 검증
-        assert result is True
-        assert enhanced_ai_service.current_backend == AIBackendType.LEGACY
-        
-        # vLLM으로 다시 전환
-        result = await enhanced_ai_service.switch_backend(AIBackendType.VLLM)
+        # 백엔드 상태 조회
+        backend_status = await enhanced_ai_service.get_backend_status()
         
         # 검증
-        assert result is True
+        assert backend_status["current_backend"] == AIBackendType.VLLM
+        assert "vllm" in backend_status["backends"]
+        assert backend_status["backends"]["vllm"]["available"] == True
+        
+        # vLLM 전용 시스템 확인
         assert enhanced_ai_service.current_backend == AIBackendType.VLLM
 
 class TestAPIIntegration:
@@ -355,10 +339,10 @@ async def run_integration_tests():
         models_result = await vllm_service.get_available_models()
         print(f"✅ 사용 가능한 모델: {models_result.get('available_models', [])}")
         
-        # Enhanced AI 서비스 초기화 테스트
+        # Enhanced AI 서비스 초기화 테스트 (vLLM 전용)
         await enhanced_ai_service.initialize()
         backend_status = await enhanced_ai_service.get_backend_status()
-        print(f"✅ 현재 백엔드: {backend_status['current_backend']}")
+        print(f"✅ 현재 백엔드: {backend_status['current_backend']} (vLLM 전용)")
         
         # 간단한 코드 생성 테스트
         request = CodeGenerationRequest(

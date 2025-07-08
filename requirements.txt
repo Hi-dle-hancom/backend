@@ -30,13 +30,8 @@ websockets==15.0.1
 # 성능 모니터링 및 프로파일링
 psutil==6.0.0
 prometheus-client==0.21.0
-memory-profiler==0.61.0
 
-# 데이터베이스 (DB 모듈용)
-asyncpg==0.29.0
-
-# 보안 및 인증
-python-jose[cryptography]==3.3.0
+# 보안 및 인증 (필수만 유지)
 passlib[bcrypt]==1.7.4
 python-multipart==0.0.9
 

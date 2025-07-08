@@ -1,7 +1,18 @@
+"""
+Enhanced Code Generation API 라우터 설정
+
+이 파일은 FastAPI 애플리케이션의 API 라우터를 설정하는 역할을 합니다.
+여기에 정의된 라우터는 각 엔드포인트 모듈에서 정의된 엔드포인트를 포함하며,
+FastAPI 애플리케이션에 등록되어 실제 요청을 처리하는 역할을 합니다.
+
+이 파일은 애플리케이션의 메인 라우터 설정을 담당하며,
+각 엔드포인트 모듈에서 정의된 엔드포인트를 참조하여 라우팅을 설정합니다.
+"""
+
 from fastapi import FastAPI
 from fastapi import APIRouter
 
-from app.api.endpoints import (  # enhanced_code_generation,  # 임시로 주석 처리 (enhanced_ai_model 의존성 문제)
+from app.api.endpoints import (
     analytics_dashboard,
     cache,
     code_generation,
@@ -18,9 +29,7 @@ from app.api.endpoints import (  # enhanced_code_generation,  # 임시로 주석
 api_router = APIRouter()
 
 # 각 엔드포인트 라우터 추가
-api_router.include_router(code_generation.router, tags=["Code Generation"])
-# api_router.include_router(enhanced_code_generation.router,
-# prefix="/enhanced-code", tags=["Enhanced Code Generation"])  # 임시로 주석 처리
+api_router.include_router(code_generation.router, tags=["Code Generation (Enhanced 통합)"])
 api_router.include_router(
     feedback.router,
     prefix="/feedback",

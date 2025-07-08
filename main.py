@@ -66,8 +66,8 @@ async def lifespan(app: FastAPI):
 
         logger.log_system_event("HAPA 백엔드 초기화", "completed", {
             "vllm_available": backend_status["backends"]["vllm"]["available"],
-            "legacy_available": backend_status["backends"]["legacy"]["available"],
-            "current_backend": backend_status["current_backend"]
+            "current_backend": backend_status["current_backend"],
+            "backend_type": "vllm_only"
         })
 
     except Exception as e:
@@ -184,17 +184,14 @@ def create_application() -> FastAPI:
                     "vllm": {
                         "available": backend_status["backends"]["vllm"]["available"],
                         "server_url": settings.VLLM_SERVER_URL
-                    },
-                    "legacy": {
-                        "available": backend_status["backends"]["legacy"]["available"]
                     }
                 },
                 "features": [
                     "실시간 스트리밍 코드 생성",
-                    "한국어/영어 자동 번역",
-                    "8가지 코드 생성 모델",
-                    "듀얼 백엔드 지원",
-                    "자동 페일오버"
+                    "한국어/영어 자동 번역", 
+                    "vLLM 멀티 LoRA 모델 지원",
+                    "스마트 캐시 시스템",
+                    "고성능 AI 추론"
                 ],
                 "endpoints": {
                     "docs": "/docs",

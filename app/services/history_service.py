@@ -17,6 +17,7 @@ from app.schemas.history import (
     SessionCreateRequest,
     SessionUpdateRequest,
 )
+from app.core.config import settings
 
 # 로깅 설정
 logger = logging.getLogger(__name__)
@@ -25,7 +26,10 @@ logger = logging.getLogger(__name__)
 class HistoryService:
     """히스토리 관리 서비스"""
 
-    def __init__(self, data_dir: str = "data/history"):
+    def __init__(self, data_dir: str = None):
+        # 통일된 데이터 경로 사용
+        if data_dir is None:
+            data_dir = f"{settings.get_absolute_data_dir}/history"
         self.data_dir = data_dir
         self.sessions_file = os.path.join(data_dir, "sessions.json")
         self.entries_file = os.path.join(data_dir, "entries.json")
@@ -292,7 +296,10 @@ class HistoryService:
 class SettingsService:
     """설정 관리 서비스"""
 
-    def __init__(self, data_dir: str = "data/settings"):
+    def __init__(self, data_dir: str = None):
+        # 통일된 데이터 경로 사용
+        if data_dir is None:
+            data_dir = f"{settings.get_absolute_data_dir}/settings"
         self.data_dir = data_dir
         self.settings_file = os.path.join(data_dir, "user_settings.json")
         self._ensure_data_directory()

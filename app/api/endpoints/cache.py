@@ -7,16 +7,9 @@ from pydantic import BaseModel
 
 from app.core.security import APIKeyModel, check_permission, get_current_api_key
 from app.core.structured_logger import log_api_request, log_api_response
-from app.services.cache_service import (
-    cache_clear,
-    cache_health_check,
-    cache_info,
-    cache_monitoring_status,
-    cache_stats,
-    cache_update_alert_thresholds,
-)
-from app.services.hybrid_cache_service import hybrid_cache
-from app.services.inference import ai_model_service
+# cache_service 함수들은 사용되지 않음 - hybrid_cache 사용
+from app.services.hybrid_cache_service import smart_cache
+
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/cache", tags=["cache"])
@@ -40,14 +33,14 @@ async def get_cache_health(
     try:
         log_api_request("GET", "/cache/health")
 
-        # 하이브리드 캐시 헬스 체크
-        health_status = await hybrid_cache.health_check()
+        # 스마트 하이브리드 캐시 헬스 체크
+        health_status = await smart_cache.health_check()
 
         response_time = (time.time() - start_time) * 1000
         log_api_response("GET", "/cache/health", 200, response_time)
 
         return {
-            "status": "healthy" if health_status["overall"] else "unhealthy",
+            "status": "healthy" if health_status["overall_healthy"] else "unhealthy",
             "checks": health_status,
             "response_time_ms": round(response_time, 2),
         }
@@ -69,7 +62,7 @@ async def get_cache_stats(
         log_api_request("GET", "/cache/stats")
 
         # 캐시 통계 조회
-        stats = await hybrid_cache.get_stats()
+        stats = await smart_cache.get_stats()
 
         response_time = (time.time() - start_time) * 1000
         log_api_response("GET", "/cache/stats", 200, response_time)
@@ -104,7 +97,7 @@ async def clear_cache(
         log_api_request("DELETE", "/cache/clear")
 
         # 캐시 클리어
-        success = await hybrid_cache.clear()
+        success = await smart_cache.clear()
 
         response_time = (time.time() - start_time) * 1000
         status_code = 200 if success else 500
@@ -144,12 +137,12 @@ async def test_cache_operations(
         test_value = {"test": "data", "timestamp": time.time()}
 
         # 1. 캐시 저장 테스트
-        set_success = await hybrid_cache.set(test_key, test_value, 60)
+        set_success = await smart_cache.set(test_key, test_value, 60)
         test_results["set_operation"] = {
             "success": set_success, "operation": "set"}
 
         # 2. 캐시 조회 테스트
-        retrieved_value = await hybrid_cache.get(test_key, None)
+        retrieved_value = await smart_cache.get(test_key, None)
         test_results["get_operation"] = {
             "success": retrieved_value == test_value,
             "operation": "get",
@@ -157,19 +150,19 @@ async def test_cache_operations(
         }
 
         # 3. 캐시 존재 확인 테스트
-        exists = await hybrid_cache.exists(test_key)
+        exists = await smart_cache.exists(test_key)
         test_results["exists_operation"] = {
             "success": exists, "operation": "exists"}
 
         # 4. 캐시 삭제 테스트
-        delete_success = await hybrid_cache.delete(test_key)
+        delete_success = await smart_cache.delete(test_key)
         test_results["delete_operation"] = {
             "success": delete_success,
             "operation": "delete",
         }
 
         # 5. 삭제 후 조회 테스트
-        after_delete = await hybrid_cache.get(test_key, "not_found")
+        after_delete = await smart_cache.get(test_key, "not_found")
         test_results["after_delete_check"] = {
             "success": after_delete == "not_found",
             "operation": "get_after_delete",
@@ -204,7 +197,7 @@ async def check_key_exists(
     try:
         log_api_request("GET", f"/cache/key/{key}/exists")
 
-        exists = await hybrid_cache.exists(key)
+        exists = await smart_cache.exists(key)
 
         response_time = (time.time() - start_time) * 1000
         log_api_response("GET", f"/cache/key/{key}/exists", 200, response_time)
@@ -231,7 +224,7 @@ async def delete_cache_key(
     try:
         log_api_request("DELETE", f"/cache/key/{key}")
 
-        success = await hybrid_cache.delete(key)
+        success = await smart_cache.delete(key)
 
         response_time = (time.time() - start_time) * 1000
         status_code = 200 if success else 404

@@ -31,8 +31,9 @@ from app.schemas.code_generation import (
     StreamingChunk,
     VLLMHealthStatus,
 )
-from app.services.ai_model import ai_model_service  # 기존 AI 모델 서비스
+# AI 모델 서비스 - 기존 ai_model.py는 제거됨 (중복 기능)
 from app.services.vllm_integration_service import VLLMModelType, vllm_service
+from app.services.performance_profiler import ai_performance_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -40,9 +41,8 @@ logger = logging.getLogger(__name__)
 class AIBackendType(str, Enum):
     """지원하는 AI 백엔드 타입"""
 
-    VLLM = "vllm"  # vLLM 멀티 LoRA 서버
-    LEGACY = "legacy"  # 기존 AI 모델 서비스
-    AUTO = "auto"  # 자동 선택 (상태에 따라)
+    VLLM = "vllm"  # vLLM 멀티 LoRA 서버 (기본)
+    AUTO = "auto"  # 자동 선택 (vLLM만 사용)
 
 
 class SafetyValidator:
@@ -220,8 +220,7 @@ class EnhancedAIModelService:
 
     def __init__(self):
         self.vllm_available = False
-        self.legacy_available = True
-        self.current_backend = AIBackendType.AUTO
+        self.current_backend = AIBackendType.VLLM  # vLLM 전용
         self.health_check_interval = 60  # 1분마다 상태 확인
         self.last_health_check = datetime.min
         self.performance_stats = {
@@ -229,40 +228,33 @@ class EnhancedAIModelService:
                 "requests": 0,
                 "successes": 0,
                 "avg_response_time": 0.0},
-            "legacy": {
-                "requests": 0,
-                "successes": 0,
-                "avg_response_time": 0.0},
         }
 
     async def initialize(self):
-        """서비스 초기화 및 백엔드 상태 확인"""
+        """vLLM 전용 서비스 초기화"""
         try:
-            logger.info("Enhanced AI 모델 서비스 초기화 시작")
+            logger.info("Enhanced AI 모델 서비스 (vLLM 전용) 초기화 시작")
 
             # vLLM 서버 상태 확인
             await self._check_vllm_health()
 
-            # 기존 AI 모델 서비스 상태 확인
-            await self._check_legacy_health()
-
-            # 기본 백엔드 결정
-            self._determine_default_backend()
+            # 성능 메트릭 초기화
+            ai_performance_metrics.reset_metrics()
 
             logger.info(
                 f"Enhanced AI 모델 서비스 초기화 완료",
                 extra={
                     "vllm_available": self.vllm_available,
-                    "legacy_available": self.legacy_available,
-                    "default_backend": self.current_backend.value,
+                    "backend": "vllm_only",
                 },
             )
 
+            if not self.vllm_available:
+                logger.error("vLLM 서버를 사용할 수 없습니다. 서버 상태를 확인하세요.")
+
         except Exception as e:
             logger.error(f"Enhanced AI 모델 서비스 초기화 실패: {e}")
-            # 페일세이프: 기존 서비스로 백업
-            self.legacy_available = True
-            self.current_backend = AIBackendType.LEGACY
+            self.vllm_available = False
 
     async def _check_vllm_health(self) -> bool:
         """vLLM 서버 상태 확인"""
@@ -282,58 +274,20 @@ class EnhancedAIModelService:
             self.vllm_available = False
             return False
 
-    async def _check_legacy_health(self) -> bool:
-        """기존 AI 모델 서비스 상태 확인"""
-        try:
-            # 기존 서비스의 간단한 상태 확인
-            # 실제 구현에서는 기존 서비스의 health check 메서드 호출
-            self.legacy_available = True  # 기본적으로 사용 가능으로 가정
-            logger.info("기존 AI 모델 서비스 상태 정상")
-            return True
-
-        except Exception as e:
-            logger.error(f"기존 AI 모델 서비스 상태 확인 실패: {e}")
-            self.legacy_available = False
-            return False
-
-    def _determine_default_backend(self):
-        """기본 사용할 백엔드 결정"""
-        if self.current_backend == AIBackendType.AUTO:
-            if self.vllm_available:
-                self.current_backend = AIBackendType.VLLM
-                logger.info("기본 백엔드로 vLLM 선택")
-            elif self.legacy_available:
-                self.current_backend = AIBackendType.LEGACY
-                logger.info("기본 백엔드로 Legacy 선택")
-            else:
-                logger.error("사용 가능한 AI 백엔드가 없습니다")
-                self.current_backend = AIBackendType.LEGACY  # 최후 백업
-
     async def _periodic_health_check(self):
-        """주기적 상태 확인"""
+        """주기적 vLLM 상태 확인"""
         now = datetime.now()
         if (now - self.last_health_check).total_seconds() >= self.health_check_interval:
-            logger.debug("주기적 백엔드 상태 확인 시작")
+            logger.debug("주기적 vLLM 상태 확인 시작")
 
             vllm_before = self.vllm_available
-            legacy_before = self.legacy_available
-
             await self._check_vllm_health()
-            await self._check_legacy_health()
 
             # 상태 변화 감지
-            if (
-                vllm_before != self.vllm_available
-                or legacy_before != self.legacy_available
-            ):
+            if vllm_before != self.vllm_available:
                 logger.info(
-                    f"백엔드 상태 변화 감지",
-                    extra={
-                        "vllm": f"{vllm_before} → {self.vllm_available}",
-                        "legacy": f"{legacy_before} → {self.legacy_available}",
-                    },
+                    f"vLLM 상태 변화 감지: {vllm_before} → {self.vllm_available}"
                 )
-                self._determine_default_backend()
 
             self.last_health_check = now
 
@@ -347,20 +301,15 @@ class EnhancedAIModelService:
         통합 코드 생성 메서드
         - 자동 백엔드 선택 또는 수동 지정
         - 페일오버 지원
-        - 성능 추적
+        - 성능 추적 및 임계값 모니터링
         """
         start_time = time.time()
 
         # 주기적 상태 확인
         await self._periodic_health_check()
 
-        # 백엔드 결정
-        backend = preferred_backend or self.current_backend
-
-        # AUTO인 경우 다시 결정
-        if backend == AIBackendType.AUTO:
-            self._determine_default_backend()
-            backend = self.current_backend
+        # vLLM 백엔드만 사용
+        backend = AIBackendType.VLLM
 
         logger.info(
             f"코드 생성 요청 처리 시작",
@@ -372,21 +321,39 @@ class EnhancedAIModelService:
             },
         )
 
-        # 백엔드별 처리
+        # vLLM 백엔드로 처리
         try:
-            if backend == AIBackendType.VLLM and self.vllm_available:
+            if self.vllm_available:
                 response = await self._generate_with_vllm(request, user_id)
-
-            elif backend == AIBackendType.LEGACY and self.legacy_available:
-                response = await self._generate_with_legacy(request, user_id)
-
             else:
-                # 페일오버 시도
-                response = await self._generate_with_failover(request, user_id, backend)
+                # vLLM 사용 불가능한 경우 오류 응답
+                response = CodeGenerationResponse(
+                    success=False,
+                    generated_code="",
+                    error_message="vLLM 서버를 사용할 수 없습니다. 서버 상태를 확인하세요.",
+                    model_used="vllm_unavailable",
+                    processing_time=0.0,
+                    token_usage={"total_tokens": 0},
+                )
 
             # 성능 통계 업데이트
             processing_time = time.time() - start_time
             response.processing_time = processing_time
+
+            # 토큰 수 계산 (정확한 토큰 수 또는 근사치)
+            token_count = response.token_usage.get("total_tokens", 0)
+            if token_count == 0:
+                # 근사치 계산: 생성된 코드 길이 기반
+                token_count = len(response.generated_code.split()) + len(response.explanation.split()) if response.explanation else 0
+
+            # AI 성능 메트릭 기록
+            ai_performance_metrics.record_ai_operation(
+                model_name=response.model_used,
+                response_time=processing_time,
+                token_count=token_count,
+                success=response.success,
+                operation_type=request.model_type.value
+            )
 
             self._update_performance_stats(
                 backend.value.lower(), processing_time, response.success
@@ -398,6 +365,8 @@ class EnhancedAIModelService:
                     "user_id": user_id,
                     "backend": backend.value,
                     "processing_time": processing_time,
+                    "token_count": token_count,
+                    "token_speed": token_count / max(processing_time, 0.001),
                     "success": response.success,
                 },
             )
@@ -407,6 +376,15 @@ class EnhancedAIModelService:
         except Exception as e:
             processing_time = time.time() - start_time
             error_msg = f"코드 생성 중 예외 발생: {str(e)}"
+
+            # 실패한 작업도 메트릭에 기록
+            ai_performance_metrics.record_ai_operation(
+                model_name=f"{backend.value}_error",
+                response_time=processing_time,
+                token_count=0,
+                success=False,
+                operation_type=request.model_type.value
+            )
 
             logger.error(
                 error_msg,
@@ -448,76 +426,7 @@ class EnhancedAIModelService:
             logger.error(f"vLLM 생성 실패: {e}")
             raise
 
-    async def _generate_with_legacy(
-        self, request: CodeGenerationRequest, user_id: str
-    ) -> CodeGenerationResponse:
-        """기존 AI 모델 서비스를 통한 코드 생성"""
-        try:
-            # 기존 서비스 호출을 위한 요청 변환
-            legacy_result = await ai_model_service.predict_and_parse(
-                prompt=request.prompt, context=request.context, language="python"
-            )
 
-            # 기존 응답을 새 형식으로 변환
-            if legacy_result["status"] == "success":
-                return CodeGenerationResponse(
-                    success=True,
-                    generated_code=legacy_result["generated_code"],
-                    explanation=legacy_result.get("explanation", ""),
-                    model_used="legacy_ai_model",
-                    processing_time=0.0,  # 실제 시간은 상위에서 계산
-                    token_usage={
-                        "total_tokens": len(legacy_result["generated_code"].split())
-                    },
-                )
-            else:
-                return CodeGenerationResponse(
-                    success=False,
-                    generated_code="",
-                    error_message=legacy_result.get(
-                        "error_message",
-                        "Unknown error"),
-                    model_used="legacy_ai_model",
-                    processing_time=0.0,
-                    token_usage={
-                        "total_tokens": 0},
-                )
-
-        except Exception as e:
-            logger.error(f"Legacy 생성 실패: {e}")
-            raise
-
-    async def _generate_with_failover(
-        self,
-        request: CodeGenerationRequest,
-        user_id: str,
-        failed_backend: AIBackendType,
-    ) -> CodeGenerationResponse:
-        """페일오버를 통한 코드 생성"""
-        logger.warning(f"{failed_backend.value} 백엔드 사용 불가, 페일오버 시도")
-
-        # vLLM → Legacy 페일오버
-        if failed_backend == AIBackendType.VLLM and self.legacy_available:
-            logger.info("vLLM → Legacy 페일오버")
-            return await self._generate_with_legacy(request, user_id)
-
-        # Legacy → vLLM 페일오버
-        elif failed_backend == AIBackendType.LEGACY and self.vllm_available:
-            logger.info("Legacy → vLLM 페일오버")
-            return await self._generate_with_vllm(request, user_id)
-
-        # 모든 백엔드 사용 불가
-        else:
-            error_msg = "모든 AI 백엔드가 사용 불가능합니다"
-            logger.error(error_msg)
-            return CodeGenerationResponse(
-                success=False,
-                generated_code="",
-                error_message=error_msg,
-                model_used="failover_error",
-                processing_time=0.0,
-                token_usage={"total_tokens": 0},
-            )
 
     def _check_translation_applied(
             self,
@@ -599,55 +508,60 @@ class EnhancedAIModelService:
             logger.warning(f"성능 통계 업데이트 실패: {e}")
 
     async def get_backend_status(self) -> Dict[str, Any]:
-        """백엔드 상태 정보 조회"""
+        """vLLM 백엔드 상태 정보 조회 - 성능 메트릭 포함"""
         await self._periodic_health_check()
+        
+        # 성능 요약 보고서 생성
+        performance_summary = ai_performance_metrics.get_performance_summary(time_window_hours=1)
 
         return {
-            "current_backend": self.current_backend.value,
-            "backends": {
-                "vllm": {
-                    "available": self.vllm_available,
-                    "stats": self.performance_stats.get("vllm", {}),
-                    "server_info": (
-                        await vllm_service.get_available_models()
-                        if self.vllm_available
-                        else {}
-                    ),
-                },
-                "legacy": {
-                    "available": self.legacy_available,
-                    "stats": self.performance_stats.get("legacy", {}),
-                },
+            "backend_type": "vllm_only",
+            "vllm": {
+                "available": self.vllm_available,
+                "stats": self.performance_stats.get("vllm", {}),
+                "server_info": (
+                    await vllm_service.get_available_models()
+                    if self.vllm_available
+                    else {}
+                ),
             },
             "last_health_check": self.last_health_check.isoformat(),
             "health_check_interval": self.health_check_interval,
+            "performance_metrics": {
+                "summary": performance_summary,
+                "thresholds": {
+                    "response_time_target": 2.0,
+                    "token_speed_target": 30.0,
+                    "success_rate_target": 0.95
+                },
+                "alerts": self._get_active_performance_alerts()
+            }
         }
+    
+    def _get_active_performance_alerts(self) -> List[Dict[str, Any]]:
+        """현재 활성화된 성능 알림 조회"""
+        recent_violations = [
+            v for v in ai_performance_metrics.metrics_data["threshold_violations"]
+            if (datetime.now() - v["timestamp"]).total_seconds() < 3600  # 최근 1시간
+        ]
+        
+        alerts = []
+        for violation_record in recent_violations:
+            for violation in violation_record["violations"]:
+                if violation["severity"] == "critical":
+                    alerts.append({
+                        "type": "critical",
+                        "model": violation_record["model"],
+                        "metric": violation["type"],
+                        "message": violation["message"],
+                        "timestamp": violation_record["timestamp"].isoformat()
+                    })
+        
+        return alerts
 
-    async def switch_backend(self, backend: AIBackendType) -> bool:
-        """백엔드 수동 전환"""
-        try:
-            if backend == AIBackendType.VLLM and not self.vllm_available:
-                await self._check_vllm_health()
-
-            if backend == AIBackendType.LEGACY and not self.legacy_available:
-                await self._check_legacy_health()
-
-            # 요청된 백엔드가 사용 가능한지 확인
-            if backend == AIBackendType.VLLM and not self.vllm_available:
-                logger.warning("vLLM 백엔드 전환 실패: 서버 사용 불가")
-                return False
-
-            if backend == AIBackendType.LEGACY and not self.legacy_available:
-                logger.warning("Legacy 백엔드 전환 실패: 서비스 사용 불가")
-                return False
-
-            self.current_backend = backend
-            logger.info(f"백엔드 전환 성공: {backend.value}")
-            return True
-
-        except Exception as e:
-            logger.error(f"백엔드 전환 실패: {e}")
-            return False
+    async def check_vllm_status(self) -> bool:
+        """vLLM 서버 상태 확인 (외부 API용)"""
+        return await self._check_vllm_health()
 
     async def close(self):
         """서비스 정리"""

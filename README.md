@@ -5,12 +5,35 @@
 [![Uvicorn](https://img.shields.io/badge/Uvicorn-0.34+-purple.svg)](https://www.uvicorn.org/)
 [![Status](https://img.shields.io/badge/Status-Production%20Ready-success.svg)](#)
 
-> **HAPA의 핵심 AI 코드 생성 백엔드 서버**  
-> FastAPI 기반 고성능 RESTful API 서비스 **(정리 및 최적화 완료)**
+> **FastAPI + vLLM 통합 AI 코딩 어시스턴트 백엔드**  
+> **현재 상태**: ✅ **운영 중** (3.13.240.111:8000)
+
+## 🤔 **이 Backend API는 무엇을 하나요?**
+
+**간단히 말해서**: HAPA의 두뇌 역할을 하는 메인 서버입니다! 🧠
+
+- **사용자가 "파이썬 코드 만들어줘"라고 요청** → Backend가 AI에게 전달
+- **AI가 코드 생성** → Backend가 결과를 정리해서 사용자에게 전달
+- **사용자 인증, 속도 제한, 캐싱** 등 모든 서버 기능 담당
+
+### 🔍 **구체적으로 하는 일**
+
+```mermaid
+graph LR
+    A[사용자 요청] --> B[Backend API]
+    B --> C[AI 서버]
+    C --> B
+    B --> D[응답 전달]
+
+    B --> E[사용자 인증]
+    B --> F[속도 제한]
+    B --> G[결과 캐싱]
+```
 
 ## 🎯 **서버 개요**
 
-HAPA Backend는 AI 기반 코드 생성, 분석, 자동완성을 담당하는 **핵심 마이크로서비스**입니다. 스트리밍 응답, 스마트 캐싱, 성능 모니터링, **강화된 오류 처리**를 통해 최적화된 개발자 경험을 제공합니다.
+HAPA Backend는 **FastAPI**를 기반으로 한 고성능 AI 코딩 어시스턴트 API 서버입니다.  
+**vLLM 멀티 LoRA 서버**와 통합되어 실시간 스트리밍 코드 생성, 자동 완성, 개인화된 코딩 지원을 제공합니다.
 
 ### 📊 **현재 상태 (2025년 6월 기준)**
 
@@ -54,60 +77,51 @@ HAPA Backend는 AI 기반 코드 생성, 분석, 자동완성을 담당하는 **
 ## 🏗️ **아키텍처 (정리 완료)**
 
 ```
-Backend/ (840KB, 최적화됨)
-├── 📁 app/                    # 메인 애플리케이션
-│   ├── 📁 api/               # API 엔드포인트 (15개 파일)
-│   │   ├── api.py            # 메인 라우터
-│   │   └── endpoints/        # 개별 엔드포인트 (14개)
-│   │       ├── code_generation.py      # 기본 코드 생성 API
-│   │       ├── enhanced_code_generation.py  # 강화된 코드 생성
-│   │       ├── error_monitoring.py     # 🆕 오류 모니터링 API
-│   │       ├── analytics_dashboard.py  # 🆕 분석 대시보드
-│   │       ├── validation.py   # 입력 검증 API
-│   │       ├── feedback.py     # 피드백 수집 API
-│   │       ├── history.py      # 히스토리 관리 API
-│   │       ├── cache.py        # 캐시 관리 API
-│   │       ├── metrics.py      # 메트릭 API
-│   │       ├── users.py        # 사용자 프로필 API
-│   │       └── custom_agents.py # 커스텀 에이전트 API
-│   ├── 📁 core/              # 핵심 설정 (7개 파일)
-│   │   ├── config.py         # 환경 설정
-│   │   ├── security.py       # 보안 설정
-│   │   ├── logging_config.py # 로깅 설정
-│   │   ├── structured_logger.py # 🆕 구조화된 로깅
-│   │   └── production_logging_strategy.py # 🆕 운영 로깅 전략
-│   ├── 📁 services/          # 비즈니스 로직 (21개 파일)
-│   │   ├── ai_model.py       # AI 모델 인터페이스
-│   │   ├── enhanced_ai_model.py  # 강화된 AI 모델
-│   │   ├── enhanced_ai_logging.py # 🆕 AI 모델 로깅
-│   │   ├── code_generator.py # 코드 생성 서비스
-│   │   ├── cache_service.py  # 캐시 서비스 (정리됨)
-│   │   ├── hybrid_cache_service.py # 🆕 하이브리드 캐시
-│   │   ├── error_handling_service.py # 🆕 오류 처리 서비스
-│   │   ├── validation_service.py  # 검증 서비스
-│   │   ├── feedback_service.py    # 피드백 서비스
-│   │   ├── history_service.py     # 히스토리 서비스
-│   │   ├── performance_profiler.py # 성능 프로파일링
-│   │   ├── response_parser.py     # 응답 파싱
-│   │   └── environment_validator.py # 환경 변수 검증
-│   ├── 📁 schemas/           # 데이터 모델 (7개 파일)
-│   │   ├── code_generation.py    # 코드 생성 스키마
-│   │   ├── error_handling.py     # 🆕 오류 처리 스키마
-│   │   ├── validation.py     # 검증 스키마
-│   │   ├── feedback.py       # 피드백 스키마
-│   │   └── users.py          # 사용자 스키마
-│   └── 📁 middleware/        # 미들웨어 (1개 파일)
-│       └── enhanced_logging_middleware.py # 🆕 로깅 미들웨어
-├── 📁 data/                  # 데이터 저장소 (정리됨)
-│   ├── cache/               # 파일 기반 캐시 (메타데이터만)
-│   ├── feedback/            # 사용자 피드백 (초기화됨)
-│   ├── history/             # 대화 히스토리 (초기화됨)
-│   └── settings/            # 사용자 설정
-├── 📁 tests/                # 테스트 코드 (4개 파일)
-├── main.py                  # 애플리케이션 진입점
-├── requirements.txt         # Python 의존성 (43개, 정리됨) (43개, 정리됨)
-└── Dockerfile              # Docker 설정
+┌─────────────────────────────────────────────────────────────┐
+│                    🔗 API Gateway Layer                     │
+├─────────────────────────┬───────────────────────────────────┤
+│     FastAPI Router      │      Middleware Stack            │
+│   - RESTful Endpoints   │   - CORS Handler                 │
+│   - OpenAPI Docs        │   - Rate Limiter                 │
+│   - Validation          │   - Auth Middleware              │
+└─────────────────────────┴───────────────────────────────────┘
+                          │
+                     🔄 Service Layer
+                          │
+┌─────────────────────────────────────────────────────────────┐
+│                  🧠 Business Logic Layer                    │
+├─────────────────────────┬───────────────────────────────────┤
+│   Enhanced AI Service   │      Core Services               │
+│ - vLLM 통합 서비스      │ - User Service                   │
+│ - 스트리밍 관리         │ - API Key Service                │
+│ - 모델 로드밸런싱       │ - Validation Service             │
+└─────────────────────────┴───────────────────────────────────┘
+                          │
+                    🔗 External APIs
+                          │
+┌─────────────────────────────────────────────────────────────┐
+│                   💾 Data & AI Layer                        │
+├─────────────────────────┬───────────────────────────────────┤
+│    PostgreSQL DB        │     vLLM Multi-LoRA              │
+│  - 사용자 데이터        │  - http://3.13.240.111:8002     │
+│  - API 키 관리         │  - 4가지 전문 모델               │
+│  - 세션 로그           │  - 실시간 스트리밍               │
+└─────────────────────────┴───────────────────────────────────┘
 ```
+
+## 🌟 **기술 스택**
+
+| 카테고리            | 기술       | 버전   | 상태    | 목적                      |
+| ------------------- | ---------- | ------ | ------- | ------------------------- |
+| **웹 프레임워크**   | FastAPI    | 0.104+ | ✅ 운영 | REST API, 자동 문서화     |
+| **ASGI 서버**       | Uvicorn    | 0.24+  | ✅ 운영 | 고성능 비동기 서버        |
+| **데이터베이스**    | PostgreSQL | 14+    | ✅ 운영 | 사용자 데이터, 메타데이터 |
+| **ORM**             | SQLAlchemy | 2.0+   | ✅ 운영 | 데이터베이스 추상화       |
+| **AI 엔진**         | vLLM       | Latest | ✅ 운영 | 코드 생성 모델 서빙       |
+| **캐싱**            | Redis      | 7.0+   | ✅ 운영 | 세션, 캐시 관리           |
+| **HTTP 클라이언트** | aiohttp    | 3.9+   | ✅ 운영 | 비동기 외부 API 호출      |
+| **유효성 검사**     | Pydantic   | 2.0+   | ✅ 운영 | 데이터 모델 검증          |
+| **모니터링**        | Prometheus | -      | ✅ 운영 | 메트릭 수집               |
 
 ## 🚀 **빠른 시작**
 
@@ -551,7 +565,100 @@ def handle_custom_error(error_code: str, message: str):
 
 - **API 명세서**: [docs/backend/api_specification_v1.0.md](../docs/backend/api_specification_v1.0.md)
 - **성능 최적화 가이드**: [docs/backend/performance_optimization_report.md](../docs/backend/performance_optimization_report.md)
-- **오류 처리 가이드**: [docs/HAPA*오류처리*구현보고서.md](../docs/HAPA_오류처리_구현보고서.md)
+- **오류 처리 가이드**: [docs/ENHANCED_LOGGING_IMPLEMENTATION_REPORT.md](../docs/ENHANCED_LOGGING_IMPLEMENTATION_REPORT.md)
+
+## 🚨 **자주 발생하는 문제 해결**
+
+### ❌ **"ModuleNotFoundError: No module named 'app'"**
+
+```bash
+# 원인: Python 경로 문제
+# 해결: 프로젝트 루트에서 실행
+cd Backend
+python -m uvicorn main:app --reload
+
+# 또는 PYTHONPATH 설정
+export PYTHONPATH="${PYTHONPATH}:$(pwd)"
+python main.py
+```
+
+### ❌ **"Connection refused to Redis"**
+
+```bash
+# 원인: Redis 서버 미실행
+# 해결1: Docker로 Redis 시작
+docker run -d -p 6379:6379 redis:7-alpine
+
+# 해결2: 로컬 Redis 설치 (Ubuntu)
+sudo apt-get install redis-server
+sudo systemctl start redis
+
+# 확인: Redis 연결 테스트
+redis-cli ping  # PONG 응답 확인
+```
+
+### ❌ **"vLLM server connection timeout"**
+
+```bash
+# 원인: AI 서버 연결 실패
+# 해결1: vLLM 서버 상태 확인
+curl http://3.13.240.111:8002/health
+
+# 해결2: 환경변수에서 타임아웃 늘리기
+export VLLM_TIMEOUT_SECONDS=600  # 10분으로 증가
+
+# 해결3: 로컬 테스트용 Mock AI 서버 사용
+export AI_MODEL_ENDPOINT="http://localhost:8888/mock"
+```
+
+### ❌ **"uvicorn: command not found"**
+
+```bash
+# 원인: uvicorn 미설치 또는 가상환경 미활성화
+# 해결1: 가상환경 활성화 확인
+source venv/bin/activate  # Linux/Mac
+# 또는
+venv\Scripts\activate     # Windows
+
+# 해결2: uvicorn 재설치
+pip install uvicorn[standard]
+
+# 해결3: Python 모듈로 직접 실행
+python -m uvicorn main:app --reload
+```
+
+### ❌ **"Port 8000 is already in use"**
+
+```bash
+# 원인: 포트 충돌
+# 해결1: 사용 중인 프로세스 찾기
+lsof -i :8000  # Mac/Linux
+netstat -ano | findstr :8000  # Windows
+
+# 해결2: 프로세스 종료
+kill -9 <PID>  # Linux/Mac
+taskkill /PID <PID> /F  # Windows
+
+# 해결3: 다른 포트 사용
+uvicorn main:app --port 8080
+```
+
+### 🩺 **헬스체크 명령어**
+
+```bash
+# 1. Backend API 상태 확인
+curl http://localhost:8000/health
+# 기대 응답: {"status": "healthy"}
+
+# 2. 환경변수 로드 확인
+curl http://localhost:8000/api/v1/config/status
+
+# 3. AI 서버 연결 확인
+curl http://localhost:8000/api/v1/code/health
+
+# 4. 데이터베이스 연결 확인 (DB Module)
+curl http://localhost:8001/health
+```
 
 ---
 

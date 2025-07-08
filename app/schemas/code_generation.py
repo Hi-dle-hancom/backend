@@ -478,3 +478,165 @@ class CodeValidationResponse(BaseModel):
     execution_safety: Literal["safe", "warning", "dangerous"] = Field(
         ..., description="실행 안전성 레벨"
     )
+
+
+class CompletionRequest(BaseModel):
+    """코드 자동 완성 요청"""
+    
+    prefix: str = Field(
+        ...,
+        description="커서 앞의 코드 컨텍스트",
+        min_length=0,
+        max_length=8000
+    )
+    
+    suffix: Optional[str] = Field(
+        default="",
+        description="커서 뒤의 코드 컨텍스트",
+        max_length=4000
+    )
+    
+    language: str = Field(
+        default="python",
+        description="프로그래밍 언어"
+    )
+    
+    file_path: Optional[str] = Field(
+        default=None,
+        description="파일 경로 (컨텍스트 추론용)"
+    )
+    
+    cursor_position: Optional[int] = Field(
+        default=None,
+        description="커서 위치 (prefix 내에서의 인덱스)"
+    )
+    
+    max_suggestions: int = Field(
+        default=5,
+        description="최대 제안 개수",
+        ge=1,
+        le=20
+    )
+    
+    include_imports: bool = Field(
+        default=True,
+        description="필요한 import 문 포함 여부"
+    )
+    
+    completion_type: Literal["inline", "block", "function"] = Field(
+        default="inline",
+        description="완성 타입 (인라인/블록/함수 단위)"
+    )
+    
+    @validator("prefix")
+    @classmethod
+    def validate_prefix(cls, v):
+        if len(v.strip()) == 0:
+            raise ValueError("prefix는 빈 문자열일 수 없습니다")
+        return v
+
+
+class CompletionSuggestion(BaseModel):
+    """개별 완성 제안"""
+    
+    text: str = Field(..., description="제안된 코드")
+    
+    confidence: float = Field(
+        ..., 
+        description="제안 신뢰도 (0.0-1.0)",
+        ge=0.0,
+        le=1.0
+    )
+    
+    completion_type: str = Field(
+        ..., 
+        description="완성 타입 (keyword, variable, function, etc.)"
+    )
+    
+    documentation: Optional[str] = Field(
+        default=None,
+        description="제안에 대한 설명"
+    )
+
+
+class CompletionResponse(BaseModel):
+    """코드 자동 완성 응답"""
+    
+    success: bool = Field(..., description="요청 성공 여부")
+    
+    suggestions: List[CompletionSuggestion] = Field(
+        default_factory=list,
+        description="완성 제안 목록"
+    )
+    
+    context_analysis: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="컨텍스트 분석 결과"
+    )
+    
+    processing_time: float = Field(
+        default=0.0,
+        description="처리 시간 (초)"
+    )
+    
+    model_used: str = Field(
+        default="autocomplete",
+        description="사용된 모델"
+    )
+    
+    token_usage: Dict[str, int] = Field(
+        default_factory=dict,
+        description="토큰 사용량"
+    )
+    
+    error_message: Optional[str] = Field(
+        default=None,
+        description="오류 메시지 (success=False인 경우)"
+    )
+    
+    timestamp: datetime = Field(
+        default_factory=datetime.now,
+        description="응답 생성 시간"
+    )
+    
+    # 추가 메타데이터
+    completion_length: int = Field(
+        default=0,
+        description="평균 완성 길이"
+    )
+    
+    cache_hit: bool = Field(
+        default=False,
+        description="캐시 히트 여부"
+    )
+
+
+class CompletionStats(BaseModel):
+    """코드 완성 통계"""
+    
+    total_requests: int = Field(default=0, description="총 요청 수")
+    
+    average_suggestions: float = Field(
+        default=0.0,
+        description="평균 제안 개수"
+    )
+    
+    average_response_time: float = Field(
+        default=0.0,
+        description="평균 응답 시간 (초)"
+    )
+    
+    cache_hit_rate: float = Field(
+        default=0.0,
+        description="캐시 히트율"
+    )
+    
+    popular_completions: List[str] = Field(
+        default_factory=list,
+        description="인기 완성 패턴"
+    )
+    
+    language_distribution: Dict[str, int] = Field(
+        default_factory=dict,
+        description="언어별 요청 분포"
+    )

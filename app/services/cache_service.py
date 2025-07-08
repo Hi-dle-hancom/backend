@@ -21,8 +21,11 @@ class PersistentCache:
 
     def __init__(
             self,
-            cache_dir: str = "data/cache",
+            cache_dir: str = None,
             max_memory_mb: int = 200):
+        # 통일된 데이터 경로 사용
+        if cache_dir is None:
+            cache_dir = f"{settings.get_absolute_data_dir}/cache"
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -601,81 +604,8 @@ class AdvancedCacheMonitor:
         logger.info("캐시 모니터링 중지됨")
 
 
-# 전역 캐시 인스턴스 및 모니터링
-cache = PersistentCache()
-cache_monitor = AdvancedCacheMonitor(cache)
+# 전역 캐시 인스턴스 (PersistentCache만 제공 - hybrid_cache_service.py 사용 권장)
+persistent_cache = PersistentCache()
+cache_monitor = AdvancedCacheMonitor(persistent_cache)
 
-
-# 편의 함수들 (TTL 정책 지원)
-def cache_set(
-    key: str, value: Any, ttl: Optional[int] = None, policy: str = "medium"
-) -> bool:
-    """캐시에 값 저장"""
-    return cache.set(key, value, ttl, policy)
-
-
-def cache_get(key: str, default: Any = None) -> Any:
-    """캐시에서 값 조회"""
-    return cache.get(key, default)
-
-
-def cache_delete(key: str) -> bool:
-    """캐시에서 값 삭제"""
-    return cache.delete(key)
-
-
-def cache_clear() -> bool:
-    """모든 캐시 삭제"""
-    return cache.clear()
-
-
-def cache_exists(key: str) -> bool:
-    """캐시 키 존재 여부 확인"""
-    return cache.exists(key)
-
-
-def cache_stats() -> Dict[str, Any]:
-    """캐시 통계 반환 (고급 통계 포함)"""
-    return cache.get_advanced_stats()
-
-
-def cache_info() -> Dict[str, Any]:
-    """캐시 정보 반환"""
-    return cache.get_cache_info()
-
-
-def cache_monitoring_status() -> Dict[str, Any]:
-    """캐시 모니터링 상태 반환"""
-    return cache_monitor.get_monitoring_status()
-
-
-def cache_update_alert_thresholds(thresholds: Dict[str, Any]) -> bool:
-    """캐시 알림 임계값 업데이트"""
-    try:
-        cache_monitor.update_thresholds(thresholds)
-        return True
-    except Exception as e:
-        logger.error(f"캐시 임계값 업데이트 실패: {e}")
-        return False
-
-
-def cache_health_check() -> Dict[str, Any]:
-    """종합 캐시 헬스 체크"""
-    try:
-        basic_stats = cache.get_advanced_stats()
-        monitoring_status = cache_monitor.get_monitoring_status()
-
-        return {
-            "cache_healthy": True,
-            "memory_status": basic_stats["memory_management"]["memory_status"],
-            "monitoring_active": monitoring_status["monitoring_enabled"],
-            "recent_alerts_count": len(monitoring_status["recent_alerts"]),
-            "total_entries": basic_stats["total_entries"],
-            "hit_rate": basic_stats["hit_rate"],
-            "memory_usage_percent": basic_stats["memory_management"][
-                "memory_usage_percent"
-            ],
-        }
-    except Exception as e:
-        logger.error(f"캐시 헬스 체크 실패: {e}")
-        return {"cache_healthy": False, "error": str(e)}
+# 편의 함수들은 제거됨 - hybrid_cache_service.py의 단일 진입점 사용

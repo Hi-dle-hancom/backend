@@ -38,8 +38,8 @@ class VLLMIntegrationService:
     """vLLM 멀티 LoRA 서버와의 통합 서비스"""
 
     def __init__(self):
-        self.vllm_base_url = "http://3.13.240.111:8002"
-        self.timeout = aiohttp.ClientTimeout(total=300)  # 5분 타임아웃
+        self.vllm_base_url = settings.VLLM_SERVER_URL
+        self.timeout = aiohttp.ClientTimeout(total=settings.VLLM_TIMEOUT_SECONDS)
         self.session: Optional[aiohttp.ClientSession] = None
 
     async def _get_session(self) -> aiohttp.ClientSession:
@@ -181,11 +181,33 @@ class VLLMIntegrationService:
             return f"# {prompt}"
 
         elif model_type == VLLMModelType.ERROR_FIX:
-            # 버그 수정: 문제 상황과 코드를 명확히 구분
+            # 버그 수정: 문제 상황과 코드를 명확히 구분하고 단계별 접근
             if request.context:
-                return f"# 다음 코드에 버그가 있습니다. 문제를 찾아 수정해주세요.\n# 문제 설명: {
-                    prompt}\n\n{request.context}"
-            return f"# 다음 코드의 버그를 수정해주세요.\n# 문제: {prompt}"
+                return f"""# 파이썬 코드 오류 수정 요청
+
+## 문제 상황:
+{prompt}
+
+## 오류가 있는 코드:
+{request.context}
+
+## 요구사항:
+1. 위 코드의 문법 오류나 논리적 오류를 찾아주세요
+2. 수정된 코드를 제공해주세요
+3. 수정한 부분에 대한 간단한 설명을 주석으로 추가해주세요
+
+## 수정된 코드:"""
+            return f"""# 파이썬 코드 오류 수정
+
+## 문제:
+{prompt}
+
+## 해결 방법:
+1. 문제를 분석하고 올바른 파이썬 코드로 수정
+2. 문법 오류 및 논리적 오류 수정
+3. 간단하고 명확한 코드 작성
+
+## 수정된 코드:"""
 
         else:  # PROMPT (기본)
             # 일반 코드 생성: 요구사항을 명확히 표현

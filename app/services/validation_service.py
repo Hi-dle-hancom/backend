@@ -14,6 +14,7 @@ from datetime import datetime
 from io import StringIO
 from typing import Any, Dict, List, Optional, Tuple
 
+from app.core.config import settings
 from app.schemas.validation import (
     CodeValidationRequest,
     CodeValidationResponse,
@@ -208,7 +209,10 @@ class SafeCodeExecutor:
 class CodeValidationService:
     """코드 검증 서비스"""
 
-    def __init__(self, data_dir: str = "data/validation"):
+    def __init__(self, data_dir: str = None):
+        # 통일된 데이터 경로 사용
+        if data_dir is None:
+            data_dir = f"{settings.get_absolute_data_dir}/validation"
         """
         코드 검증 서비스 초기화
 

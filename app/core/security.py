@@ -50,8 +50,8 @@ class APIKeyManager:
     """API Key 관리 클래스"""
 
     def __init__(self):
-        # 환경변수에서 데이터 경로 읽기
-        self.data_dir = Path("data")
+        # 통일된 데이터 경로 사용 (프로젝트 루트 기준)
+        self.data_dir = Path(settings.get_absolute_data_dir)
         self.api_keys_file = self.data_dir / "api_keys.json"
         self.rate_limits_file = self.data_dir / "rate_limits.json"
 

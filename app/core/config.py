@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "HAPA (Hancom AI Python Assistant) API"
 
     # 환경 설정
-    DEBUG: bool = True
+    DEBUG: bool = False
     ENVIRONMENT: str = "development"
 
     # 서버 설정
@@ -29,10 +29,9 @@ class Settings(BaseSettings):
     CORS_ORIGINS: List[str] = [
         "http://localhost:3000",  # React 웹앱
         "http://localhost:3001",  # Grafana
-        "vscode-webview://*",  # VSCode Extension WebView
-        "vscode://*",  # VSCode URI 스킴
-        "https://vscode.dev",  # VSCode Web
-        "*",  # 개발환경에서만 허용
+        "http://127.0.0.1:3000",
+        "vscode://",
+        "vscode-webview://*"
     ]
 
     # AI 모델 설정
@@ -209,6 +208,25 @@ class Settings(BaseSettings):
     VLLM_LOG_REQUESTS: bool = Field(default=False, env="VLLM_LOG_REQUESTS")
     VLLM_ENABLE_MONITORING: bool = Field(
         default=True, env="VLLM_ENABLE_MONITORING")
+
+    # 데이터 디렉토리 통일 설정 (NEW)
+    DATA_DIR: str = Field(
+        default="data",
+        env="DATA_DIR",
+        description="데이터 저장 디렉토리 경로 (프로젝트 루트 기준)"
+    )
+
+    @property
+    def get_absolute_data_dir(self) -> str:
+        """프로젝트 루트 기준 절대 데이터 경로 반환"""
+        import os
+        from pathlib import Path
+        
+        # 현재 파일 기준으로 프로젝트 루트 찾기
+        current_file = Path(__file__)
+        project_root = current_file.parent.parent.parent.parent  # Backend/app/core/config.py -> project/
+        
+        return str(project_root / self.DATA_DIR)
 
     @validator("ALLOWED_IPS")
     def validate_allowed_ips(cls, v):

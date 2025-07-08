@@ -11,6 +11,7 @@ from app.schemas.feedback import (
     FeedbackStats,
     FeedbackType,
 )
+from app.core.config import settings
 
 # 로깅 설정
 logger = logging.getLogger(__name__)
@@ -19,7 +20,10 @@ logger = logging.getLogger(__name__)
 class FeedbackService:
     """피드백 데이터 처리 서비스"""
 
-    def __init__(self, data_dir: str = "data/feedback"):
+    def __init__(self, data_dir: str = None):
+        # 통일된 데이터 경로 사용
+        if data_dir is None:
+            data_dir = f"{settings.get_absolute_data_dir}/feedback"
         """
         피드백 서비스 초기화
 
