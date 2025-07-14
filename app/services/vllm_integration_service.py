@@ -92,10 +92,17 @@ class ChunkBuffer:
             r'try:\s*\n(?:\s{4}.*\n)+except[^:]*:\s*\n(?:\s{4}.*\n)+', # 완전한 try-except
         ]
         
-        # AI 모델 특수 토큰 패턴 (제거용) - 더 정교한 패턴
+        # 🎯 실제 vLLM stop token 패턴 (제거용)
         self.special_token_patterns = [
-            r'<\|im_end\|>.*$',                               # im_end 토큰 및 이후 모든 내용
-            r'<\|im_start\|>[^|]*\|>',                        # im_start 토큰
+            r'\n# --- Generation Complete ---.*$',            # vLLM 완료 마커 및 이후 내용
+            r'<｜fim▁begin｜>.*$',                           # FIM 시작 토큰 및 이후 내용
+            r'<｜fim▁hole｜>.*$',                            # FIM 홀 토큰 및 이후 내용
+            r'<｜fim▁end｜>.*$',                             # FIM 종료 토큰 및 이후 내용
+            r'<\|endoftext\|>.*$',                            # GPT 종료 토큰 및 이후 내용
+            
+            # 백업용 일반적인 토큰들
+            r'<\|im_end\|>.*$',                               # ChatML 종료 토큰
+            r'<\|im_start\|>[^|]*\|>',                        # ChatML 시작 토큰
             r'<\|assistant\|>',                               # assistant 토큰
             r'<\|user\|>',                                    # user 토큰
             r'<\|system\|>',                                  # system 토큰
@@ -330,47 +337,51 @@ class ChunkBuffer:
         return None
 
     def _contains_end_token(self, text: str) -> bool:
-        """im_end 토큰이 포함되어 있는지 확인 - 강화된 패턴"""
+        """실제 vLLM stop token 확인 - FIM 토큰 포함"""
+        # 🎯 실제 vLLM에서 사용하는 stop token들
         end_patterns = [
-            r'<\|im_end\|>',                                  # 정확한 im_end 토큰
-            r'<\|end\|>',                                     # 간단한 end 토큰
-            r'</?\|assistant\|>',                             # assistant 종료
-            r'\[/INST\]',                                     # 명령 종료
+            r'\n# --- Generation Complete ---',               # vLLM 완료 마커
+            r'<｜fim▁begin｜>',                              # FIM 시작 토큰 (일본어 ｜)
+            r'<｜fim▁hole｜>',                               # FIM 홀 토큰 (일본어 ｜)
+            r'<｜fim▁end｜>',                                # FIM 종료 토큰 (일본어 ｜)
+            r'<\|endoftext\|>',                               # GPT 스타일 종료 (영어 |)
+            
+            # 백업용 일반적인 종료 패턴들
+            r'<\|im_end\|>',                                  # ChatML 종료
             r'</s>',                                          # 시퀀스 종료
             r'<eos>',                                         # End of Sequence
-            r'<\|endoftext\|>',                               # GPT 스타일 종료
-            r'### END ###',                                   # 명시적 종료 마커
-            r'```\s*$',                                       # 코드 블록 종료 (줄 끝)
-            r'Assistant:\s*$',                                # Assistant 라벨만 있는 경우
+            r'\[DONE\]',                                      # 커스텀 완료 신호
         ]
         
         for pattern in end_patterns:
-            if re.search(pattern, text, re.IGNORECASE | re.MULTILINE):
+            if re.search(pattern, text, re.MULTILINE):
                 return True
         return False
     
     def _extract_content_before_end_token(self, text: str) -> str:
-        """im_end 토큰 이전의 내용만 추출 - 강화된 패턴"""
+        """실제 vLLM stop token 이전 내용 추출 - FIM 토큰 포함"""
+        # 🎯 실제 vLLM에서 사용하는 stop token들 (우선순위 순)
         end_patterns = [
-            r'<\|im_end\|>',
-            r'<\|end\|>',
-            r'</?\|assistant\|>',
-            r'\[/INST\]',
-            r'</s>',
-            r'<eos>',
-            r'<\|endoftext\|>',
-            r'### END ###',
-            r'```\s*$',
-            r'Assistant:\s*$',
+            r'\n# --- Generation Complete ---',               # vLLM 완료 마커
+            r'<｜fim▁begin｜>',                              # FIM 시작 토큰 (일본어 ｜)
+            r'<｜fim▁hole｜>',                               # FIM 홀 토큰 (일본어 ｜)
+            r'<｜fim▁end｜>',                                # FIM 종료 토큰 (일본어 ｜)
+            r'<\|endoftext\|>',                               # GPT 스타일 종료 (영어 |)
+            
+            # 백업용 일반적인 종료 패턴들
+            r'<\|im_end\|>',                                  # ChatML 종료
+            r'</s>',                                          # 시퀀스 종료
+            r'<eos>',                                         # End of Sequence
+            r'\[DONE\]',                                      # 커스텀 완료 신호
         ]
         
         for pattern in end_patterns:
-            match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
+            match = re.search(pattern, text, re.MULTILINE)
             if match:
                 # 토큰 이전 부분만 반환
                 content_before = text[:match.start()].strip()
                 if settings.should_log_performance():
-                    print(f"✂️ [ChunkBuffer] 종료토큰 제거: '{text}' → '{content_before}'")
+                    print(f"✂️ [ChunkBuffer] 실제 종료토큰 제거: '{pattern}' → '{content_before[:50]}...'")
                 return content_before
         
         return text
@@ -496,6 +507,25 @@ class VLLMIntegrationService:
         except BaseException:
             numeric_user_id = 12345  # 기본값
 
+        # 🎯 실제 vLLM에서 사용하는 stop token 설정
+        stop_tokens = [
+            "\n# --- Generation Complete ---",  # vLLM 완료 마커
+            "<｜fim▁begin｜>",                  # FIM 시작 토큰 (일본어 ｜)
+            "<｜fim▁hole｜>",                   # FIM 홀 토큰 (일본어 ｜)
+            "<｜fim▁end｜>",                    # FIM 종료 토큰 (일본어 ｜)
+            "<|endoftext|>",                    # GPT 스타일 종료 토큰 (영어 |)
+        ]
+        
+        # 간단한 요청에 대해서는 더 엄격한 종료 조건 추가
+        if complexity_analysis["level"] == "simple":
+            stop_tokens.extend([
+                "\n\n```",       # 코드 블록 후 즉시 종료
+                "\n\n#",         # 주석 시작 시 종료
+                "\nprint(",      # 추가 print문 방지
+                "\n# 설명",      # 설명 시작 시 종료
+                "\n# 예시",      # 예시 시작 시 종료
+            ])
+
         vllm_request = {
             "user_id": numeric_user_id,
             "model_type": vllm_model.value,
@@ -504,6 +534,7 @@ class VLLMIntegrationService:
             "temperature": optimized_params["temperature"],
             "top_p": optimized_params["top_p"],
             "max_tokens": optimized_params["max_tokens"],
+            "stop": stop_tokens,  # 🚀 종료 토큰 추가
         }
 
         # 환경별 조건부 로깅 - 요청 상세 정보
@@ -897,20 +928,34 @@ class VLLMIntegrationService:
                                         if self.enable_debug_logging:
                                             print(f"🚫 [vLLM] 버퍼링 비활성화 - 직접 전송")
                                         
-                                        # im_end 토큰 감지 시 즉시 중단
-                                        if ('<|im_end' in text_content or '</s>' in text_content or 
-                                            '<eos>' in text_content or '<|endoftext|>' in text_content):
+                                        # 🎯 실제 vLLM stop token 감지 시 즉시 중단
+                                        vllm_stop_tokens = [
+                                            "\n# --- Generation Complete ---",
+                                            "<｜fim▁begin｜>",
+                                            "<｜fim▁hole｜>",
+                                            "<｜fim▁end｜>",
+                                            "<|endoftext|>",
+                                        ]
+                                        
+                                        detected_stop_token = None
+                                        for stop_token in vllm_stop_tokens:
+                                            if stop_token in text_content:
+                                                detected_stop_token = stop_token
+                                                break
+                                        
+                                        if detected_stop_token:
                                             streaming_duration = time.time() - streaming_start_time
                                             if self.enable_performance_logging:
                                                 logger.log_system_event(
-                                                    "vLLM 스트리밍", "im_end_detected_direct", {
+                                                    "vLLM 스트리밍", "vllm_stop_token_detected_direct", {
                                                         "user_id": user_id,
                                                         "total_chunks": chunk_count,
                                                         "total_content_length": total_content_length,
                                                         "early_termination": True,
+                                                        "stop_token": detected_stop_token,
                                                         "duration_seconds": round(streaming_duration, 2)
                                                     })
-                                                print(f"🛑 [vLLM] 직접모드에서 종료토큰 감지")
+                                                print(f"🛑 [vLLM] 직접모드에서 실제 stop token 감지: {detected_stop_token}")
                                             yield f"data: [DONE]\n\n"
                                             return
                                         
