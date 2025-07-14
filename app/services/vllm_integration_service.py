@@ -41,57 +41,54 @@ class VLLMModelType(str, Enum):
 
 
 class ChunkBuffer:
-    """청크 버퍼링 클래스 - 의미있는 단위로 청크 그룹화 및 후처리 (성능 최적화)"""
+    """청크 버퍼링 클래스 - 의미있는 단위로 청크 그룹화 및 후처리 (극한 성능 최적화)"""
     
-    def __init__(self, buffer_size: int = 500, buffer_timeout: float = 2.0):
-        # 극한 성능 최적화 설정 (99.9% 청크 감소 목표)
-        self.buffer_size = buffer_size  # 최대 버퍼 크기 (300 → 500자로 극한 증가)
-        self.buffer_timeout = buffer_timeout  # 버퍼 타임아웃 (1.0 → 2.0초로 극한 증가)
-        self.min_chunk_size = 120  # 최소 청크 크기 (80 → 120자로 증가)
-        self.max_chunk_size = 1200  # 최대 청크 크기 (800 → 1200자로 증가)
-        self.optimal_chunk_size = 300  # 최적 청크 크기 (150 → 300자로 증가)
+    def __init__(self, buffer_size: int = 80, buffer_timeout: float = 0.1):
+        # 🚀 극한 성능 최적화 설정 (99.9% 청크 감소 목표: 30-50개 청크)
+        self.buffer_size = buffer_size  # 극한 감소: 500 → 80자
+        self.buffer_timeout = buffer_timeout  # 극한 감소: 2.0 → 0.1초
+        self.min_chunk_size = 200  # 극한 증가: 120 → 200자 (더 큰 청크 강제)
+        self.max_chunk_size = 800  # 감소: 1200 → 800자
+        self.optimal_chunk_size = 400  # 증가: 300 → 400자
         self.buffer = ""
         self.last_flush_time = time.time()
         
         # 성능 모니터링 변수들
         self.total_chunks_processed = 0
         self.total_bytes_processed = 0
-        self.small_chunks_count = 0  # 80자 미만 청크 개수
+        self.small_chunks_count = 0  # 200자 미만 청크 개수
         self.large_chunks_count = 0  # 800자 초과 청크 개수
-        self.optimal_chunks_count = 0  # 80-300자 청크 개수
+        self.optimal_chunks_count = 0  # 200-400자 청크 개수
         
-        # 청크 품질 개선을 위한 설정
-        self.force_meaningful_boundaries = True  # 의미 있는 경계에서만 플러시
-        self.strict_size_enforcement = True  # 엄격한 크기 검증
+        # 🔥 극도로 엄격한 청크 생성 정책
+        self.force_meaningful_boundaries = True
+        self.strict_size_enforcement = True
+        self.ultra_strict_mode = True  # 새로운 극한 모드
         
-        # 극도로 엄격한 의미 구분자 패턴 (청크 생성 99% 감소)
+        # 🔥 극도로 엄격한 의미 구분자 패턴 (오직 완전한 코드 블록만)
         self.meaningful_delimiters = [
-            # 최고 우선순위: 완전한 함수/클래스 블록만 (최소 5줄 이상)
-            r'def\s+\w+\([^)]*\):\s*\n(?:\s{4}.*\n){5,}',     # 함수 정의 (5줄 이상)
-            r'class\s+\w+[^:]*:\s*\n(?:\s{4}.*\n){5,}',       # 클래스 정의 (5줄 이상)
-            r'async\s+def\s+\w+\([^)]*\):\s*\n(?:\s{4}.*\n){3,}', # async 함수 (3줄 이상)
+            # 최고 우선순위: 완전한 함수/클래스 블록만 (최소 10줄 이상)
+            r'def\s+\w+\([^)]*\):\s*\n(?:\s{4}.*\n){10,}',     # 함수 정의 (10줄 이상)
+            r'class\s+\w+[^:]*:\s*\n(?:\s{4}.*\n){10,}',       # 클래스 정의 (10줄 이상)
+            r'async\s+def\s+\w+\([^)]*\):\s*\n(?:\s{4}.*\n){8,}', # async 함수 (8줄 이상)
             
-            # 고우선순위: 완전한 제어 구조 (최소 3줄)
-            r'if\s+[^:]+:\s*\n(?:\s{4}.*\n){3,}(?:else:\s*\n(?:\s{4}.*\n)*)?', # if-else (3줄 이상)
-            r'for\s+[^:]+:\s*\n(?:\s{4}.*\n){3,}',            # for 루프 (3줄 이상)
-            r'while\s+[^:]+:\s*\n(?:\s{4}.*\n){3,}',          # while 루프 (3줄 이상)
-            r'try:\s*\n(?:\s{4}.*\n){2,}except[^:]*:\s*\n(?:\s{4}.*\n){2,}', # try-except (각 2줄 이상)
+            # 고우선순위: 완전한 제어 구조 (최소 8줄)
+            r'if\s+[^:]+:\s*\n(?:\s{4}.*\n){8,}(?:else:\s*\n(?:\s{4}.*\n)*)?', # if-else (8줄 이상)
+            r'for\s+[^:]+:\s*\n(?:\s{4}.*\n){6,}',            # for 루프 (6줄 이상)
+            r'while\s+[^:]+:\s*\n(?:\s{4}.*\n){6,}',          # while 루프 (6줄 이상)
+            r'try:\s*\n(?:\s{4}.*\n){4,}except[^:]*:\s*\n(?:\s{4}.*\n){4,}', # try-except (각 4줄 이상)
             
-            # 중우선순위: 완전한 docstring이나 긴 주석 블록
-            r'"""\s*\n[^"]{20,}\n\s*"""',                     # 긴 docstring (20자 이상)
-            r"'''\s*\n[^']{20,}\n\s*'''",                     # 긴 docstring (20자 이상)
-            r'\n\s*#[^\n]{30,}\n',                            # 긴 주석 (30자 이상)
-            
-            # 저우선순위: 큰 구조적 분리
-            r'\n\s*\n\s*\n',                                  # 연속 빈 줄 (3개 이상)
-            r'```[^`]{50,}```',                               # 긴 코드 블록 (50자 이상)
+            # 중우선순위: 완전한 docstring이나 긴 주석 블록 (100자 이상)
+            r'"""\s*\n[^"]{100,}\n\s*"""',                    # 긴 docstring (100자 이상)
+            r"'''\s*\n[^']{100,}\n\s*'''",                    # 긴 docstring (100자 이상)
+            r'\n\s*#[^\n]{100,}\n',                           # 긴 주석 (100자 이상)
         ]
         
-        # complete_code_patterns도 더 엄격하게 (기존에 정의되지 않았다면 추가)
+        # 완전한 코드 요소 감지 패턴 (더 엄격하게)
         self.complete_code_patterns = [
-            r'def\s+\w+\([^)]*\):\s*\n(?:\s{4}.*\n){3,}',     # 완전한 함수 (3줄 이상)
-            r'class\s+\w+[^:]*:\s*\n(?:\s{4}.*\n){3,}',       # 완전한 클래스 (3줄 이상)
-            r'if\s+[^:]+:\s*\n(?:\s{4}.*\n){2,}else:\s*\n(?:\s{4}.*\n)+', # 완전한 if-else
+            r'def\s+\w+\([^)]*\):\s*\n(?:\s{4}.*\n){8,}',     # 완전한 함수 (8줄 이상)
+            r'class\s+\w+[^:]*:\s*\n(?:\s{4}.*\n){8,}',       # 완전한 클래스 (8줄 이상)
+            r'if\s+[^:]+:\s*\n(?:\s{4}.*\n){4,}else:\s*\n(?:\s{4}.*\n)+', # 완전한 if-else
             r'try:\s*\n(?:\s{4}.*\n)+except[^:]*:\s*\n(?:\s{4}.*\n)+', # 완전한 try-except
         ]
         
@@ -110,18 +107,9 @@ class ChunkBuffer:
             r'<unk>|<pad>|<eos>|<bos>',                       # 특수 토큰들
             r'Assistant:|Human:|User:',                       # 역할 라벨
         ]
-        
-        # 완전한 코드 요소 감지 패턴
-        self.complete_code_patterns = [
-            r'def\s+\w+\([^)]*\):\s*\n(?:\s{4}.*\n)*(?=\S|$)',  # 완전한 함수
-            r'class\s+\w+[^:]*:\s*\n(?:\s{4}.*\n)*(?=\S|$)',    # 완전한 클래스
-            r'if\s+[^:]+:\s*\n(?:\s{4}.*\n)*(?:elif[^:]*:\s*\n(?:\s{4}.*\n)*)*(?:else:\s*\n(?:\s{4}.*\n)*)?(?=\S|$)', # 완전한 if-elif-else
-            r'for\s+[^:]+:\s*\n(?:\s{4}.*\n)*(?=\S|$)',         # 완전한 for 루프
-            r'while\s+[^:]+:\s*\n(?:\s{4}.*\n)*(?=\S|$)',       # 완전한 while 루프
-        ]
     
     def add_chunk(self, chunk: str) -> Optional[str]:
-        """청크를 버퍼에 추가하고 필요시 플러시 - 성능 최적화된 로직"""
+        """청크를 버퍼에 추가하고 필요시 플러시 - 극한 성능 최적화된 로직"""
         
         # 개발 환경에서만 상세 로그
         if settings.should_log_debug():
@@ -149,36 +137,38 @@ class ChunkBuffer:
         self.buffer += cleaned_chunk
         current_time = time.time()
         
-        # 초강력 플러시 조건 (99% 청크 감소 목표)
-        if self.strict_size_enforcement:
-            # 극도로 엄격한 모드: 최소 크기의 2배 미달 시 절대 플러시 금지
-            if len(self.buffer) < self.min_chunk_size * 2:  # 240자 미만
-                # 극도로 제한된 예외: 오직 최대 크기 초과나 강제 종료시만
-                if (len(self.buffer) >= self.max_chunk_size * 1.5 or  # 1800자 이상
+        # 🔥 극도로 엄격한 플러시 조건 (30-50 청크 목표)
+        if self.ultra_strict_mode:
+            # 극도로 엄격한 모드: 최소 크기의 3배 미달 시 절대 플러시 금지
+            if len(self.buffer) < self.min_chunk_size * 3:  # 600자 미만
+                # 극도로 제한된 예외: 오직 최대 크기 2배 초과나 강제 종료시만
+                if (len(self.buffer) >= self.max_chunk_size * 2 or  # 1600자 이상
                     self._contains_end_token(self.buffer)):
                     should_flush = True
                 else:
                     should_flush = False
             else:
-                # 최소 크기 2배 충족 시에만 다른 조건 검토
+                # 최소 크기 3배 충족 시에만 다른 조건 검토
                 should_flush = (
-                    # 1. 최적 크기 2배 도달 + 강한 의미 경계만
-                    (len(self.buffer) >= self.optimal_chunk_size * 2 and  # 600자 이상
-                     self._has_strong_meaningful_boundary()) or
-                    
-                    # 2. 완전한 코드 요소 완성 + 최소 300자 이상
-                    (len(self.buffer) >= 300 and
+                    # 1. 최적 크기 3배 도달 + 완전한 코드 요소만
+                    (len(self.buffer) >= self.optimal_chunk_size * 3 and  # 1200자 이상
                      self._has_complete_code_element()) or
                     
-                    # 3. 버퍼 크기 3배 초과 (강제 플러시)
-                    len(self.buffer) >= self.buffer_size * 3.0 or  # 1500자 이상
+                    # 2. 완전한 코드 요소 완성 + 최소 600자 이상
+                    (len(self.buffer) >= 600 and
+                     self._has_complete_code_element() and
+                     self._has_strong_meaningful_boundary()) or
                     
-                    # 4. 최대 크기 1.5배 초과 (무조건 플러시)
-                    len(self.buffer) >= self.max_chunk_size * 1.5 or  # 1800자 이상
+                    # 3. 버퍼 크기 4배 초과 (강제 플러시)
+                    len(self.buffer) >= self.buffer_size * 4.0 or  # 320자 이상
                     
-                    # 5. 매우 엄격한 시간 기반 조건
-                    (current_time - self.last_flush_time >= self.buffer_timeout * 5.0 and  # 10초 이상
-                     len(self.buffer) >= self.min_chunk_size * 3 and  # 360자 이상
+                    # 4. 최대 크기 2배 초과 (무조건 플러시)
+                    len(self.buffer) >= self.max_chunk_size * 2 or  # 1600자 이상
+                    
+                    # 5. 매우 엄격한 시간 기반 조건 (거의 발생 안함)
+                    (current_time - self.last_flush_time >= self.buffer_timeout * 10.0 and  # 1초 이상
+                     len(self.buffer) >= self.min_chunk_size * 4 and  # 800자 이상
+                     self._has_complete_code_element() and  # 완전한 코드 요소
                      self._has_strong_meaningful_boundary())  # 강한 경계만
                 )
         else:
@@ -196,12 +186,12 @@ class ChunkBuffer:
         if should_flush:
             buffer_length = len(self.buffer)
             
-            # 청크 크기별 분류
+            # 청크 크기별 분류 (새로운 기준)
             if buffer_length < self.min_chunk_size:
                 self.small_chunks_count += 1
                 if settings.should_log_performance():
                     print(f"⚠️ [ChunkBuffer] 작은 청크 플러시: {buffer_length}자 (비정상)")
-            elif buffer_length <= self.buffer_size:
+            elif buffer_length <= self.optimal_chunk_size:
                 self.optimal_chunks_count += 1
                 if settings.should_log_debug():
                     print(f"✅ [ChunkBuffer] 최적 청크 플러시: {buffer_length}자")
@@ -214,7 +204,7 @@ class ChunkBuffer:
             
             # 플러시 상세 로그
             if settings.should_log_performance():
-                chunk_quality = "최적" if self.min_chunk_size <= buffer_length <= self.buffer_size else "비정상"
+                chunk_quality = "최적" if self.min_chunk_size <= buffer_length <= self.optimal_chunk_size else "비정상"
                 print(f"📤 [ChunkBuffer] {chunk_quality} 플러시 완료: {buffer_length}자 → {len(result)}자")
             
             return result
@@ -394,10 +384,10 @@ class VLLMIntegrationService:
         self.timeout = aiohttp.ClientTimeout(total=settings.VLLM_TIMEOUT_SECONDS)
         self.session = None
         
-        # 청크 버퍼링 설정 극한 강화 (99.9% 청크 감소 목표)
+        # 🚀 청크 버퍼링 설정 극한 강화 (30-50 청크 목표)
         self.chunk_buffering_enabled = True
-        self.default_buffer_size = 500  # 기본 버퍼 크기: 300 → 500자로 극한 증가
-        self.default_buffer_timeout = 2.0  # 기본 버퍼 타임아웃: 1.0 → 2.0초로 극한 증가
+        self.default_buffer_size = 80  # 극한 감소: 500 → 80자
+        self.default_buffer_timeout = 0.1  # 극한 감소: 2.0 → 0.1초
         
         # 성능 최적화 설정
         self.enable_performance_logging = settings.should_log_performance()
@@ -485,12 +475,16 @@ class VLLMIntegrationService:
     def _prepare_vllm_request(
         self, request: CodeGenerationRequest, user_id: str
     ) -> Dict[str, Any]:
-        """HAPA 요청을 vLLM 요청 형식으로 변환"""
+        """HAPA 요청을 vLLM 요청 형식으로 변환 - 극한 성능 최적화"""
         vllm_model = self._map_hapa_to_vllm_model(request.model_type)
 
-        # 모델별 프롬프트 최적화
+        # 🚀 요청 복잡도 분석 및 동적 파라미터 최적화
+        complexity_analysis = self._analyze_request_complexity(request.prompt)
+        optimized_params = self._get_optimized_parameters(complexity_analysis, vllm_model)
+        
+        # 🚀 강화된 프롬프트 최적화 (간결성 강제)
         optimized_prompt = self._optimize_prompt_for_model(
-            request.prompt, vllm_model, request
+            request.prompt, vllm_model, request, complexity_analysis
         )
 
         # 사용자 선택 옵션 매핑
@@ -507,34 +501,170 @@ class VLLMIntegrationService:
             "model_type": vllm_model.value,
             "prompt": optimized_prompt,
             "user_select_options": user_select_options,
-            "temperature": float(getattr(request, "temperature", 0.3)),
-            "top_p": float(getattr(request, "top_p", 0.95)),
-            "max_tokens": int(getattr(request, "max_tokens", 1024)),
+            "temperature": optimized_params["temperature"],
+            "top_p": optimized_params["top_p"],
+            "max_tokens": optimized_params["max_tokens"],
         }
 
         # 환경별 조건부 로깅 - 요청 상세 정보
         if settings.should_log_request_response():
             logger.log_system_event(
-                f"vLLM 요청 준비",
+                f"vLLM 요청 준비 (최적화됨)",
                 "success",
                 {
                     "user_id": user_id,
                     "numeric_user_id": numeric_user_id,
                     "model_type": vllm_model.value,
                     "prompt_length": len(optimized_prompt),
-                    "temperature": vllm_request["temperature"],
+                    "complexity": complexity_analysis["level"],
+                    "max_tokens": optimized_params["max_tokens"],
+                    "temperature": optimized_params["temperature"],
                 },
             )
 
         return vllm_request
+    
+    def _analyze_request_complexity(self, prompt: str) -> Dict[str, Any]:
+        """요청 복잡도 분석 - 간단/중간/복잡 분류"""
+        prompt_lower = prompt.lower()
+        
+        # 🔍 간단한 요청 패턴 감지
+        simple_patterns = [
+            # 출력 관련
+            r'(출력|print|display).*["\']?\w{1,10}["\']?',  # "jay 출력", "hello world 출력"
+            r'["\']?\w{1,10}["\']?.*출력',                 # "jay를 출력"
+            r'print\s*\(["\']?\w{1,20}["\']?\)',           # print("jay")
+            
+            # 변수 선언
+            r'^[a-zA-Z_]\w*\s*=\s*["\']?\w{1,20}["\']?$',  # name = "jay"
+            
+            # 간단한 함수 호출
+            r'^\w+\(\)$',                                  # func()
+            
+            # 한 줄 코드
+            r'^.{1,50}$',                                  # 50자 이하
+        ]
+        
+        # 🔍 복잡한 요청 패턴 감지
+        complex_patterns = [
+            # 클래스/함수 정의
+            r'(class|def|async def)',
+            r'(algorithm|알고리즘)',
+            r'(database|데이터베이스|db)',
+            r'(api|rest|graphql)',
+            r'(optimization|최적화)',
+            r'(machine learning|머신러닝|ml)',
+            r'(data structure|자료구조)',
+            r'(design pattern|디자인패턴)',
+            
+            # 복잡한 기능
+            r'(error handling|예외처리)',
+            r'(unit test|테스트)',
+            r'(documentation|문서화)',
+            r'(refactor|리팩토링)',
+        ]
+        
+        # 길이 기반 분석
+        char_count = len(prompt)
+        word_count = len(prompt.split())
+        
+        # 패턴 매칭
+        simple_matches = sum(1 for pattern in simple_patterns if re.search(pattern, prompt, re.IGNORECASE))
+        complex_matches = sum(1 for pattern in complex_patterns if re.search(pattern, prompt, re.IGNORECASE))
+        
+        # 복잡도 결정
+        if simple_matches > 0 and char_count <= 50 and complex_matches == 0:
+            complexity_level = "simple"
+            confidence = 0.9
+        elif complex_matches > 0 or char_count > 200 or word_count > 30:
+            complexity_level = "complex"
+            confidence = 0.8
+        else:
+            complexity_level = "medium"
+            confidence = 0.7
+        
+        return {
+            "level": complexity_level,
+            "confidence": confidence,
+            "char_count": char_count,
+            "word_count": word_count,
+            "simple_matches": simple_matches,
+            "complex_matches": complex_matches,
+            "patterns_detected": []
+        }
+    
+    def _get_optimized_parameters(self, complexity_analysis: Dict[str, Any], model_type: VLLMModelType) -> Dict[str, Any]:
+        """복잡도 분석 결과에 따른 최적화된 파라미터 반환"""
+        complexity_level = complexity_analysis["level"]
+        
+        # 🚀 복잡도별 극한 최적화 파라미터
+        if complexity_level == "simple":
+            # 간단한 요청: 극한 최적화 (3-5초, 30-50 청크 목표)
+            return {
+                "max_tokens": 50,      # 극한 감소: 1024 → 50 토큰
+                "temperature": 0.1,    # 극한 감소: 0.3 → 0.1 (정확성 우선)
+                "top_p": 0.8,          # 감소: 0.95 → 0.8 (집중도 증가)
+            }
+        elif complexity_level == "medium":
+            # 중간 복잡도: 적당한 최적화
+            return {
+                "max_tokens": 200,     # 크게 감소: 1024 → 200 토큰
+                "temperature": 0.2,    # 감소: 0.3 → 0.2
+                "top_p": 0.85,         # 감소: 0.95 → 0.85
+            }
+        else:  # complex
+            # 복잡한 요청: 보수적 최적화
+            return {
+                "max_tokens": 500,     # 중간 감소: 1024 → 500 토큰
+                "temperature": 0.25,   # 약간 감소: 0.3 → 0.25
+                "top_p": 0.9,          # 약간 감소: 0.95 → 0.9
+            }
 
     def _optimize_prompt_for_model(
         self,
         prompt: str,
         model_type: VLLMModelType,
-        request: CodeGenerationRequest) -> str:
-        """모델 타입에 따른 프롬프트 최적화"""
+        request: CodeGenerationRequest,
+        complexity_analysis: Dict[str, Any]) -> str:
+        """모델 타입에 따른 프롬프트 최적화 - 간결성 강제"""
         
+        complexity_level = complexity_analysis["level"]
+        
+        # 🚀 간단한 요청에 대한 강화된 프롬프트 최적화
+        if complexity_level == "simple":
+            # 간단한 요청: 극도로 간결한 응답 강제
+            if model_type == VLLMModelType.AUTOCOMPLETE:
+                return prompt
+            
+            # 간단한 출력 요청 최적화
+            if re.search(r'(출력|print)', prompt, re.IGNORECASE):
+                # "jay 출력" -> 강제로 한 줄 코드만 요청
+                return f"""다음 요청에 대해 Python 코드 한 줄만 작성하세요. 설명이나 주석 없이 코드만 반환하세요.
+
+요청: {prompt}
+
+조건:
+- 한 줄 코드만 작성
+- print() 함수 사용
+- 설명 금지
+- 예시나 추가 내용 금지
+
+코드:"""
+            
+            else:
+                return f"""다음 요청에 대해 최소한의 Python 코드만 작성하세요. 간결하고 핵심적인 코드만 반환하세요.
+
+요청: {prompt}
+
+조건:
+- 최대 3줄 코드
+- 필수 코드만 작성
+- 설명 최소화
+- 예시 금지
+
+코드:"""
+        
+        # 기존 로직 (중간/복잡한 요청)
         if model_type == VLLMModelType.AUTOCOMPLETE:
             # 자동완성: 컨텍스트 중심으로 간단한 프롬프트
             return prompt
@@ -562,10 +692,23 @@ class VLLMIntegrationService:
 
         else:  # PROMPT (기본)
             # 일반 코드 생성: 요구사항을 명확히 표현
-            context_prefix = (
-                f"# 컨텍스트:\n{request.context}\n\n" if request.context else ""
-            )
-            return f"{context_prefix}# 요청사항: {prompt}"
+            if complexity_level == "medium":
+                context_prefix = (
+                    f"# 컨텍스트:\n{request.context}\n\n" if request.context else ""
+                )
+                return f"""{context_prefix}# 요청사항: {prompt}
+
+조건:
+- 간결하고 실용적인 코드 작성
+- 필수 기능만 구현
+- 과도한 설명 금지
+
+코드:"""
+            else:  # complex
+                context_prefix = (
+                    f"# 컨텍스트:\n{request.context}\n\n" if request.context else ""
+                )
+                return f"{context_prefix}# 요청사항: {prompt}"
 
     def _map_user_options(
             self, request: CodeGenerationRequest) -> Dict[str, Any]:

@@ -279,6 +279,104 @@ def _update_completion_stats(
         logger.error(f"통계 업데이트 실패: {e}")
 
 
+def _apply_performance_optimization(request: CodeGenerationRequest) -> CodeGenerationRequest:
+    """
+    🚀 성능 최적화 함수: 요청 복잡도 분석 및 동적 파라미터 적용
+    - 간단한 요청: max_tokens=50, temperature=0.1
+    - 중간 복잡도: max_tokens=200, temperature=0.2  
+    - 복잡한 요청: max_tokens=500, temperature=0.25
+    """
+    import re
+    import copy
+    
+    # 요청 복사본 생성
+    optimized_request = copy.deepcopy(request)
+    
+    # 복잡도 분석
+    prompt_lower = request.prompt.lower()
+    char_count = len(request.prompt)
+    word_count = len(request.prompt.split())
+    
+    # 간단한 요청 패턴 감지
+    simple_patterns = [
+        r'(출력|print|display).*["\']?\w{1,10}["\']?',  # "jay 출력"
+        r'["\']?\w{1,10}["\']?.*출력',                 # "jay를 출력"
+        r'print\s*\(["\']?\w{1,20}["\']?\)',           # print("jay")
+        r'^[a-zA-Z_]\w*\s*=\s*["\']?\w{1,20}["\']?$',  # name = "jay"
+        r'^\w+\(\)$',                                  # func()
+        r'^.{1,50}$',                                  # 50자 이하
+    ]
+    
+    # 복잡한 요청 패턴 감지
+    complex_patterns = [
+        r'(class|def|async def)',
+        r'(algorithm|알고리즘)',
+        r'(database|데이터베이스|db)',
+        r'(api|rest|graphql)',
+        r'(optimization|최적화)',
+        r'(machine learning|머신러닝|ml)',
+        r'(error handling|예외처리)',
+        r'(unit test|테스트)',
+    ]
+    
+    # 패턴 매칭
+    simple_matches = sum(1 for pattern in simple_patterns if re.search(pattern, request.prompt, re.IGNORECASE))
+    complex_matches = sum(1 for pattern in complex_patterns if re.search(pattern, request.prompt, re.IGNORECASE))
+    
+    # 복잡도 결정 및 파라미터 최적화
+    if simple_matches > 0 and char_count <= 50 and complex_matches == 0:
+        # 간단한 요청: 극한 최적화
+        optimized_request.max_tokens = 50      # 95% 감소
+        optimized_request.temperature = 0.1    # 정확성 우선
+        optimized_request.top_p = 0.8          # 집중도 증가
+        
+        # 간결한 프롬프트로 교체
+        if re.search(r'(출력|print)', request.prompt, re.IGNORECASE):
+            optimized_request.prompt = f"""다음 요청에 대해 Python 코드 한 줄만 작성하세요. 설명이나 주석 없이 코드만 반환하세요.
+
+요청: {request.prompt}
+
+조건:
+- 한 줄 코드만 작성
+- print() 함수 사용
+- 설명 금지
+- 예시나 추가 내용 금지
+
+코드:"""
+        
+        logger.info(f"🚀 간단한 요청 최적화 적용: max_tokens={optimized_request.max_tokens}, temp={optimized_request.temperature}")
+        
+    elif complex_matches > 0 or char_count > 200 or word_count > 30:
+        # 복잡한 요청: 보수적 최적화
+        optimized_request.max_tokens = 500     # 51% 감소
+        optimized_request.temperature = 0.25   # 약간 감소
+        optimized_request.top_p = 0.9          # 약간 감소
+        
+        logger.info(f"🔧 복잡한 요청 최적화 적용: max_tokens={optimized_request.max_tokens}, temp={optimized_request.temperature}")
+        
+    else:
+        # 중간 복잡도: 적당한 최적화
+        optimized_request.max_tokens = 200     # 80% 감소
+        optimized_request.temperature = 0.2    # 감소
+        optimized_request.top_p = 0.85         # 감소
+        
+        # 간결성 강제 프롬프트 추가
+        optimized_request.prompt = f"""다음 요청에 대해 간결하고 실용적인 Python 코드를 작성하세요.
+
+요청: {request.prompt}
+
+조건:
+- 핵심 기능만 구현
+- 과도한 설명 금지
+- 최대한 간결하게
+
+코드:"""
+        
+        logger.info(f"⚖️ 중간 복잡도 최적화 적용: max_tokens={optimized_request.max_tokens}, temp={optimized_request.temperature}")
+    
+    return optimized_request
+
+
 # =============================================================================
 # 기존 엔드포인트 코드는 그대로 유지
 # =============================================================================
@@ -479,8 +577,9 @@ async def generate_code_stream(
                         else:
                             yield chunk
                 else:
-                    # 기본 vLLM 스트리밍
-                    async for chunk in vllm_service.generate_code_stream(request, user_id):
+                    # 🚀 기본 모드에서도 최적화 적용 (복잡도 분석 + 동적 파라미터)
+                    optimized_request = _apply_performance_optimization(request)
+                    async for chunk in vllm_service.generate_code_stream(optimized_request, user_id):
                         yield chunk
 
             except Exception as e:
@@ -617,8 +716,9 @@ async def generate_code(
             # Enhanced 모드에서 품질 평가
             quality_score = await _evaluate_code_quality(response.generated_code, user_preferences)
         else:
-            # 기본 vLLM 코드 생성
-            response = await vllm_service.generate_code_sync(request, user_id)
+            # 🚀 기본 모드에서도 최적화 적용 (복잡도 분석 + 동적 파라미터)
+            optimized_request = _apply_performance_optimization(request)
+            response = await vllm_service.generate_code_sync(optimized_request, user_id)
 
         # 처리 시간 계산
         processing_time = (datetime.now() - start_time).total_seconds()
