@@ -65,9 +65,9 @@ async def lifespan(app: FastAPI):
         logger.log_system_event("AI 백엔드 상태", "success", backend_status)
 
         logger.log_system_event("HAPA 백엔드 초기화", "completed", {
-            "vllm_available": backend_status["backends"]["vllm"]["available"],
-            "current_backend": backend_status["current_backend"],
-            "backend_type": "vllm_only"
+            "vllm_available": backend_status["vllm"]["available"],
+            "backend_type": backend_status["backend_type"],
+            "last_health_check": backend_status["last_health_check"]
         })
 
     except Exception as e:
@@ -180,9 +180,9 @@ def create_application() -> FastAPI:
                 "timestamp": time.time(),
                 "environment": settings.ENVIRONMENT,
                 "ai_backends": {
-                    "current": backend_status["current_backend"],
+                    "backend_type": backend_status["backend_type"],
                     "vllm": {
-                        "available": backend_status["backends"]["vllm"]["available"],
+                        "available": backend_status["vllm"]["available"],
                         "server_url": settings.VLLM_SERVER_URL
                     }
                 },
@@ -230,7 +230,7 @@ def create_application() -> FastAPI:
                     "server_health": health_status,
                     "available_models": models_info.get("available_models", []),
                     "server_details": models_info,
-                    "backend_status": backend_status["backends"]["vllm"],
+                    "backend_status": backend_status["vllm"],
                     "configuration": {
                         "server_url": settings.VLLM_SERVER_URL,
                         "timeout": settings.VLLM_TIMEOUT_SECONDS,

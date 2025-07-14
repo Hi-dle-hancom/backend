@@ -44,11 +44,32 @@ class Settings(BaseSettings):
     SECRET_KEY: str = "hapa_secret_key_for_development_only_change_in_production"
     API_KEY_EXPIRY_DAYS: int = 365
 
-    # 로깅 설정
+    # 로깅 설정 (환경별 차별화)
     LOG_LEVEL: str = "INFO"
     LOG_FILE_ROTATION: bool = True
     LOG_MAX_SIZE: str = "10MB"
     LOG_BACKUP_COUNT: int = 5
+    
+    # 개발/프로덕션 환경별 로깅 제어 (강화됨)
+    ENABLE_DEBUG_LOGS: bool = Field(
+        default_factory=lambda: os.getenv("ENABLE_DEBUG_LOGS", "true" if os.getenv("ENVIRONMENT", "development") == "development" else "false").lower() == "true",
+        description="디버그 로그 활성화 여부"
+    )
+    
+    LOG_CHUNK_DETAILS: bool = Field(
+        default_factory=lambda: os.getenv("LOG_CHUNK_DETAILS", "true" if os.getenv("ENVIRONMENT", "development") == "development" else "false").lower() == "true",
+        description="청크 상세 로그 활성화 여부"
+    )
+    
+    ENABLE_PERFORMANCE_LOGS: bool = Field(
+        default_factory=lambda: os.getenv("ENABLE_PERFORMANCE_LOGS", "true").lower() == "true",
+        description="성능 로그 활성화 여부"
+    )
+    
+    ENABLE_REQUEST_RESPONSE_LOGS: bool = Field(
+        default_factory=lambda: os.getenv("ENABLE_REQUEST_RESPONSE_LOGS", "true" if os.getenv("ENVIRONMENT", "development") == "development" else "false").lower() == "true",
+        description="요청/응답 로그 활성화 여부"
+    )
 
     # 성능 및 캐시 설정
     CACHE_TTL: int = 3600  # 캐시 TTL (초)
@@ -203,7 +224,7 @@ class Settings(BaseSettings):
     VLLM_ENABLE_RETRY: bool = Field(default=True, env="VLLM_ENABLE_RETRY")
     VLLM_RETRY_DELAY: float = Field(default=1.0, env="VLLM_RETRY_DELAY")  # 초
 
-    # vLLM 추가 설정
+    # vLLM 추가 설정 (환경별 로깅 강화)
     VLLM_DEBUG_MODE: bool = Field(default=False, env="VLLM_DEBUG_MODE")
     VLLM_LOG_REQUESTS: bool = Field(default=False, env="VLLM_LOG_REQUESTS")
     VLLM_ENABLE_MONITORING: bool = Field(
@@ -227,6 +248,70 @@ class Settings(BaseSettings):
         project_root = current_file.parent.parent.parent.parent  # Backend/app/core/config.py -> project/
         
         return str(project_root / self.DATA_DIR)
+
+    # 🆕 환경별 로깅 설정 메서드들
+    def should_log_performance(self) -> bool:
+        """성능 관련 로그를 기록할지 결정"""
+        if hasattr(self, '_should_log_performance'):
+            return self._should_log_performance
+        
+        # 환경별 성능 로그 정책
+        if self.ENVIRONMENT == "development":
+            self._should_log_performance = True  # 개발 환경에서는 활성화
+        elif self.ENVIRONMENT == "production":
+            self._should_log_performance = False  # 운영 환경에서는 비활성화 (성능 최적화)
+        else:
+            self._should_log_performance = False  # 기본적으로 비활성화
+        
+        return self._should_log_performance
+    
+    def should_log_debug(self) -> bool:
+        """디버그 로그를 기록할지 결정"""
+        if hasattr(self, '_should_log_debug'):
+            return self._should_log_debug
+        
+        # 환경별 디버그 로그 정책
+        if self.ENVIRONMENT == "development":
+            self._should_log_debug = True  # 개발 환경에서는 활성화
+        elif self.ENVIRONMENT == "production":
+            self._should_log_debug = False  # 운영 환경에서는 완전 비활성화
+        else:
+            self._should_log_debug = False  # 기본적으로 비활성화
+        
+        return self._should_log_debug
+    
+    def should_log_chunk_details(self) -> bool:
+        """청크 상세 로그를 기록할지 결정 (가장 상세한 로그)"""
+        if hasattr(self, '_should_log_chunk_details'):
+            return self._should_log_chunk_details
+        
+        # 청크 상세 로그는 개발 환경에서만, 그리고 특별한 디버깅이 필요할 때만
+        debug_mode = os.getenv("HAPA_DEBUG_CHUNKS", "false").lower() == "true"
+        self._should_log_chunk_details = (self.ENVIRONMENT == "development" and debug_mode)
+        
+        return self._should_log_chunk_details
+    
+    def get_log_level_summary(self) -> Dict[str, bool]:
+        """현재 로그 레벨 설정 요약"""
+        return {
+            "environment": self.ENVIRONMENT,
+            "performance_logging": self.should_log_performance(),
+            "debug_logging": self.should_log_debug(),
+            "chunk_details": self.should_log_chunk_details(),
+        }
+
+    def should_log_request_response(self) -> bool:
+        """요청/응답 로그를 기록할지 여부"""
+        return self.ENABLE_REQUEST_RESPONSE_LOGS or self.ENVIRONMENT == "development"
+    
+    def get_environment_log_level(self) -> str:
+        """환경별 적절한 로그 레벨 반환"""
+        if self.ENVIRONMENT == "production":
+            return "WARNING"
+        elif self.ENVIRONMENT == "staging":
+            return "INFO"
+        else:
+            return "DEBUG" if self.should_log_debug() else "INFO"
 
     @validator("ALLOWED_IPS")
     def validate_allowed_ips(cls, v):

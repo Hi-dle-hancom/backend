@@ -33,6 +33,13 @@ ENV DEBUG=false
 ENV HOST=0.0.0.0
 ENV PORT=8000
 
+# 로깅 최적화 설정 (운영환경)
+ENV LOG_LEVEL=WARNING
+ENV ENABLE_DEBUG_LOGS=false
+ENV ENABLE_PERFORMANCE_LOGS=true
+ENV ENABLE_REQUEST_RESPONSE_LOGS=false
+ENV LOG_CHUNK_DETAILS=false
+
 # vLLM 서버 설정 (기본값)
 ENV VLLM_SERVER_URL=http://3.13.240.111:8002
 ENV VLLM_TIMEOUT_SECONDS=300
@@ -49,7 +56,7 @@ ENV VLLM_CONNECTION_POOL_SIZE=10
 ENV VLLM_ENABLE_RETRY=true
 ENV VLLM_RETRY_DELAY=1.0
 
-# 운영용 설정
+# 운영용 설정 (로깅 최적화)
 ENV VLLM_DEBUG_MODE=false
 ENV VLLM_LOG_REQUESTS=false
 ENV VLLM_ENABLE_MONITORING=true
@@ -85,7 +92,9 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 # 비루트 사용자 생성 및 전환 (보안)
 RUN groupadd -r hapa && useradd -r -g hapa hapa
 RUN chown -R hapa:hapa /app
+
+# 프로덕션 사용자로 전환
 USER hapa
 
 # 애플리케이션 시작
-CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"] 
+CMD ["python", "main.py"] 
