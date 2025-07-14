@@ -114,6 +114,45 @@ class ChunkBuffer:
             r'<unk>|<pad>|<eos>|<bos>',                       # 특수 토큰들
             r'Assistant:|Human:|User:',                       # 역할 라벨
         ]
+        
+        # 🚀 불필요한 패턴 제거 (Specific Pattern Removal)
+        self.unwanted_patterns = [
+            # 셔뱅 및 스크립트 헤더
+            r'#!/usr/bin/env python3?.*\n',                   # 셔뱅 라인
+            r'#!/bin/python3?.*\n',                           # 간단한 셔뱅
+            r'# -\*- coding: utf-8 -\*-.*\n',                # 인코딩 선언
+            
+            # 파일 메타데이터 및 주석 헤더
+            r'# --- File Comment -*\n',                       # 파일 주석 헤더
+            r'# Created on\s*:.*\n',                          # 생성 날짜
+            r'# Author\s*:.*\n',                              # 작성자
+            r'# @Author\s*:.*\n',                             # @Author 형식
+            r'# Email\s*:.*\n',                               # 이메일
+            r'# Version\s*:.*\n',                             # 버전
+            r'# Last modified\s*:.*\n',                       # 수정일
+            r'# Description\s*:.*\n',                         # 설명
+            
+            # 긴 구분선 및 장식 주석
+            r'# -{20,}.*\n',                                  # 긴 대시 라인
+            r'# ={20,}.*\n',                                  # 긴 등호 라인  
+            r'# \*{20,}.*\n',                                 # 긴 별표 라인
+            r'# _{20,}.*\n',                                  # 긴 언더스코어 라인
+            
+            # 날짜/시간 패턴
+            r'\d{4}/\d{1,2}/\d{1,2}.*\d{1,2}:\d{2}:\d{2}',   # 날짜시간 형식
+            r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}',          # ISO 날짜시간
+            
+            # HTML/XML 태그 잔재
+            r'</c>',                                          # HTML 태그 잔재
+            r'<[^>]+>',                                       # 기타 HTML 태그
+            
+            # 이메일 주소
+            r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', # 이메일 패턴
+            
+            # 불필요한 독스트링 템플릿
+            r'"""[\s\S]*?"""',                                # 멀티라인 독스트링 (선택적)
+            r"'''[\s\S]*?'''",                                # 멀티라인 독스트링 (선택적)
+        ]
     
     def add_chunk(self, chunk: str) -> Optional[str]:
         """청크를 버퍼에 추가하고 필요시 플러시 - 극한 성능 최적화된 로직"""
@@ -278,6 +317,30 @@ class ChunkBuffer:
             cleaned_text = re.sub(pattern, '', cleaned_text, flags=re.IGNORECASE)
         return cleaned_text
     
+    def _remove_unwanted_patterns(self, text: str) -> str:
+        """🚀 불필요한 패턴 제거 (Specific Pattern Removal)"""
+        cleaned_text = text
+        
+        # 첫 번째로 종료 마커 기반 트렁케이션 적용
+        cleaned_text = self._extract_content_before_end_token(cleaned_text)
+        
+        # 두 번째로 불필요한 패턴들 제거
+        for pattern in self.unwanted_patterns:
+            before_length = len(cleaned_text)
+            cleaned_text = re.sub(pattern, '', cleaned_text, flags=re.MULTILINE | re.IGNORECASE)
+            after_length = len(cleaned_text)
+            
+            # 로그: 패턴이 제거되었을 때만
+            if before_length != after_length and settings.should_log_performance():
+                print(f"🧹 [패턴제거] '{pattern[:30]}...' 제거: {before_length-after_length}자")
+        
+        # 최종 정리: 과도한 공백 및 줄바꿈 제거
+        cleaned_text = re.sub(r'\n\s*\n\s*\n+', '\n\n', cleaned_text)  # 3개 이상 줄바꿈 → 2개
+        cleaned_text = re.sub(r'[ \t]+\n', '\n', cleaned_text)  # 줄 끝 공백 제거
+        cleaned_text = re.sub(r'\n[ \t]+', '\n', cleaned_text)  # 줄 시작 공백 제거 (들여쓰기 제외)
+        
+        return cleaned_text.strip()
+    
     def _has_complete_code_element(self) -> bool:
         """완전한 코드 요소(함수, 클래스 등)가 있는지 확인"""
         for pattern in self.complete_code_patterns:
@@ -311,27 +374,26 @@ class ChunkBuffer:
         self.total_chunks_processed += 1
         self.total_bytes_processed += len(content)
         
-        # 강화된 텍스트 정리
+        # 🚀 강화된 텍스트 정리 (2단계 방법 적용)
         if content:
-            # 1. AI 모델 특수 토큰 제거
+            # 1단계: 종료 마커 기반 트렁케이션 + 불필요한 패턴 제거
+            content = self._remove_unwanted_patterns(content)
+            
+            # 2단계: AI 모델 특수 토큰 제거 (백업)
             content = self._clean_special_tokens(content)
             
-            # 2. 여분의 공백 및 줄바꿈 정리
-            content = re.sub(r'\n\s*\n\s*\n+', '\n\n', content)  # 3개 이상 줄바꿈 → 2개
-            content = re.sub(r'[ \t]+', ' ', content)  # 여러 공백/탭 → 단일 공백
-            content = re.sub(r'[ \t]*\n[ \t]*', '\n', content)  # 줄바꿈 주변 공백 제거
-            
-            # 3. 코드 블록 정리
+            # 3단계: 코드 블록 정리
             content = re.sub(r'\n{3,}```', '\n\n```', content)  # 코드 블록 앞 과도한 줄바꿈
             content = re.sub(r'```\n{3,}', '```\n\n', content)  # 코드 블록 뒤 과도한 줄바꿈
         
         return content.strip()
     
     def force_flush(self) -> Optional[str]:
-        """강제 플러시 (스트리밍 종료 시) - 특수 토큰 제거 포함"""
+        """강제 플러시 (스트리밍 종료 시) - 🚀 2단계 정리 적용"""
         if self.buffer:
             content = self.flush()
-            # 최종 특수 토큰 제거
+            # 🚀 추가적인 불필요한 패턴 제거 (더 강력한 정리)
+            content = self._remove_unwanted_patterns(content)
             content = self._clean_special_tokens(content)
             return content if content.strip() else None
         return None
@@ -359,7 +421,7 @@ class ChunkBuffer:
         return False
     
     def _extract_content_before_end_token(self, text: str) -> str:
-        """실제 vLLM stop token 이전 내용 추출 - FIM 토큰 포함"""
+        """🚀 종료 마커 기반 트렁케이션 (Stop Marker Truncation)"""
         # 🎯 실제 vLLM에서 사용하는 stop token들 (우선순위 순)
         end_patterns = [
             r'\n# --- Generation Complete ---',               # vLLM 완료 마커
@@ -373,16 +435,35 @@ class ChunkBuffer:
             r'</s>',                                          # 시퀀스 종료
             r'<eos>',                                         # End of Sequence
             r'\[DONE\]',                                      # 커스텀 완료 신호
+            
+            # 🚀 추가 트렁케이션 패턴들 (불필요한 내용 차단)
+            r'#!/usr/bin/env python',                         # 셔뱅 시작점에서 차단
+            r'# --- File Comment',                            # 파일 주석 시작점에서 차단
+            r'# Created on\s*:',                              # 메타데이터 시작점에서 차단
+            r'# Author\s*:',                                  # 작성자 정보 시작점에서 차단
+            r'# @Author',                                     # @Author 시작점에서 차단
+            r'@\w+\.\w+',                                     # 이메일 시작점에서 차단 (예: jiaoyu_li@deepseeks.com)
+            r'</c>',                                          # HTML 태그 잔재에서 차단
         ]
         
+        # 가장 먼저 발견되는 패턴에서 트렁케이션
+        earliest_match = None
+        earliest_position = len(text)
+        earliest_pattern = None
+        
         for pattern in end_patterns:
-            match = re.search(pattern, text, re.MULTILINE)
-            if match:
-                # 토큰 이전 부분만 반환
-                content_before = text[:match.start()].strip()
-                if settings.should_log_performance():
-                    print(f"✂️ [ChunkBuffer] 실제 종료토큰 제거: '{pattern}' → '{content_before[:50]}...'")
-                return content_before
+            match = re.search(pattern, text, re.MULTILINE | re.IGNORECASE)
+            if match and match.start() < earliest_position:
+                earliest_position = match.start()
+                earliest_match = match
+                earliest_pattern = pattern
+        
+        if earliest_match:
+            # 가장 빠른 종료 마커 이전 부분만 반환
+            content_before = text[:earliest_position].strip()
+            if settings.should_log_performance():
+                print(f"✂️ [트렁케이션] '{earliest_pattern}' 감지 → 차단: '{content_before[:50]}...'")
+            return content_before
         
         return text
 
@@ -928,13 +1009,22 @@ class VLLMIntegrationService:
                                         if self.enable_debug_logging:
                                             print(f"🚫 [vLLM] 버퍼링 비활성화 - 직접 전송")
                                         
-                                        # 🎯 실제 vLLM stop token 감지 시 즉시 중단
+                                        # 🎯 실제 vLLM stop token + 트렁케이션 패턴 감지 시 즉시 중단
                                         vllm_stop_tokens = [
                                             "\n# --- Generation Complete ---",
                                             "<｜fim▁begin｜>",
                                             "<｜fim▁hole｜>",
                                             "<｜fim▁end｜>",
                                             "<|endoftext|>",
+                                            # 🚀 추가 트렁케이션 패턴들
+                                            "#!/usr/bin/env python",
+                                            "# --- File Comment",
+                                            "# Created on:",
+                                            "# Author:",
+                                            "# @Author",
+                                            "</c>",
+                                            "@deepseeks.com",
+                                            "_li@",
                                         ]
                                         
                                         detected_stop_token = None
