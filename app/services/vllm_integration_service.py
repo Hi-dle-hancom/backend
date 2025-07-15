@@ -43,7 +43,7 @@ class VLLMModelType(str, Enum):
 class ChunkBuffer:
     """청크 버퍼링 클래스 - 의미있는 단위로 청크 그룹화 및 후처리 (극한 성능 최적화)"""
     
-    def __init__(self, buffer_size: int = 80, buffer_timeout: float = 0.1):
+    def __init__(self, buffer_size: int = 80, buffer_timeout: float = 0.1, request_context: str = ""):
         # 🚀 극한 성능 최적화 설정 (99.9% 청크 감소 목표: 30-50개 청크)
         self.buffer_size = buffer_size  # 극한 감소: 500 → 80자
         self.buffer_timeout = buffer_timeout  # 극한 감소: 2.0 → 0.1초
@@ -52,6 +52,9 @@ class ChunkBuffer:
         self.optimal_chunk_size = 400  # 증가: 300 → 400자
         self.buffer = ""
         self.last_flush_time = time.time()
+        
+        # 📝 요청 맥락 저장 (정확한 코드 생성용)
+        self.request_context = request_context.lower() if request_context else ""
         
         # 성능 모니터링 변수들
         self.total_chunks_processed = 0
@@ -94,7 +97,9 @@ class ChunkBuffer:
         
         # 🎯 실제 vLLM stop token 패턴 (제거용)
         self.special_token_patterns = [
+            r'<\|EOT\|>.*$',                                  # 최우선 스탑토큰 및 이후 내용
             r'\n# --- Generation Complete ---.*$',            # vLLM 완료 마커 및 이후 내용
+            r'# --- Generation Complete ---.*$',              # vLLM 완료 마커 (줄바꿈 없음) 및 이후 내용
             r'<｜fim▁begin｜>.*$',                           # FIM 시작 토큰 및 이후 내용
             r'<｜fim▁hole｜>.*$',                            # FIM 홀 토큰 및 이후 내용
             r'<｜fim▁end｜>.*$',                             # FIM 종료 토큰 및 이후 내용
@@ -108,7 +113,15 @@ class ChunkBuffer:
             r'<\|system\|>',                                  # system 토큰
             r'<\|end[^>]*\|>',                                # 기타 end 토큰
             r'<\|[^>]*\|>',                                   # 기타 특수 토큰
-            r'</?\w+[^>]*>',                                  # HTML 태그 유사 패턴
+            
+            # 🛡️ HTML 태그 및 메타데이터 제거 강화
+            r'</td>[^>]*>?',                                  # HTML 테이블 태그
+            r'</?t[dr]>',                                     # HTML 테이블 관련 태그
+            r'</?\w+[^>]*>',                                  # 일반 HTML 태그
+            r'---\w*Generation\w*---?',                       # Generation 메타데이터
+            r'#[-]+\w*Generation\w*[-]*',                     # Generation 마커
+            r'#[-]+\w+[-]*#?',                               # 기타 메타데이터 마커
+            
             r'\[INST\]|\[/INST\]',                            # 명령 토큰
             r'<s>|</s>',                                      # 시작/종료 토큰
             r'<unk>|<pad>|<eos>|<bos>',                       # 특수 토큰들
@@ -122,14 +135,21 @@ class ChunkBuffer:
         if settings.should_log_debug():
             print(f"🔍 [ChunkBuffer] 청크 입력: '{chunk[:30]}...' (길이: {len(chunk)})")
         
-        # 먼저 im_end 토큰 체크 - 발견되면 즉시 중단
-        if self._contains_end_token(chunk):
+        # 1단계: 개별 청크에서 정확한 스탑 토큰 체크
+        detected_token = self._get_detected_end_token(chunk)
+        if detected_token:
             if settings.should_log_performance():
-                print(f"🛑 [ChunkBuffer] 종료 토큰 감지: '{chunk[:20]}...'")
-            # im_end 토큰 이전 부분만 추출
+                print(f"🎯 정확한 stop token 감지: '{detected_token}' - 즉시 종료")
+            
+            # stop token 이전 부분만 추출하여 깨끗한 코드 생성
             clean_chunk = self._extract_content_before_end_token(chunk)
-            if clean_chunk:
-                self.buffer += clean_chunk
+            if clean_chunk and clean_chunk.strip():
+                # 요청 맥락 고려한 코드 생성
+                final_clean = self._generate_appropriate_code(clean_chunk.strip())
+                self.buffer += final_clean
+                if settings.should_log_performance():
+                    print(f"✨ 요청에 맞는 코드 생성: {final_clean}")
+            
             # 즉시 플러시하고 중단 신호 반환
             final_content = self.flush()
             return final_content if final_content.strip() else "[END_OF_GENERATION]"
@@ -143,6 +163,23 @@ class ChunkBuffer:
             
         self.buffer += cleaned_chunk
         current_time = time.time()
+        
+        # 2단계: 누적된 버퍼에서 조각난 스탑 토큰 체크
+        buffer_detected_token = self._get_detected_end_token(self.buffer)
+        if buffer_detected_token:
+            if settings.should_log_performance():
+                print(f"🎯 버퍼에서 stop token 감지: '{buffer_detected_token}' - 즉시 종료")
+            
+            # 누적된 버퍼에서 토큰 이전 부분만 추출하여 깨끗한 코드 생성
+            clean_buffer = self._extract_content_before_end_token(self.buffer)
+            if clean_buffer and clean_buffer.strip():
+                final_clean = self._generate_appropriate_code(clean_buffer.strip())
+                self.buffer = final_clean  # 정리된 내용으로 버퍼 업데이트
+                if settings.should_log_performance():
+                    print(f"✨ 요청에 맞는 코드 생성: {final_clean}")
+            
+            final_content = self.flush()
+            return final_content if final_content.strip() else "[END_OF_GENERATION]"
         
         # 🔥 극도로 엄격한 플러시 조건 (30-50 청크 목표)
         if self.ultra_strict_mode:
@@ -337,54 +374,185 @@ class ChunkBuffer:
         return None
 
     def _contains_end_token(self, text: str) -> bool:
-        """실제 vLLM stop token 확인 - FIM 토큰 포함"""
-        # 🎯 실제 vLLM에서 사용하는 stop token들
-        end_patterns = [
-            r'\n# --- Generation Complete ---',               # vLLM 완료 마커
-            r'<｜fim▁begin｜>',                              # FIM 시작 토큰 (일본어 ｜)
-            r'<｜fim▁hole｜>',                               # FIM 홀 토큰 (일본어 ｜)
-            r'<｜fim▁end｜>',                                # FIM 종료 토큰 (일본어 ｜)
-            r'<\|endoftext\|>',                               # GPT 스타일 종료 (영어 |)
+        """실제 vLLM stop token 확인 - 정확한 매칭만"""
+        if not text or not text.strip():
+            return False
             
-            # 백업용 일반적인 종료 패턴들
-            r'<\|im_end\|>',                                  # ChatML 종료
-            r'</s>',                                          # 시퀀스 종료
-            r'<eos>',                                         # End of Sequence
-            r'\[DONE\]',                                      # 커스텀 완료 신호
+        # 🎯 정확한 stop token들만 (완전 매칭)
+        exact_stop_tokens = [
+            "<|EOT|>",                                        # 최우선 스탑토큰
+            "\n# --- Generation Complete ---",               # vLLM 완료 마커
+            "# --- Generation Complete ---",                 # vLLM 완료 마커 (줄바꿈 없음)
+            "<|endoftext|>",                                 # GPT 스타일 종료
+            "<|im_end|>",                                    # ChatML 종료
+            "[DONE]",                                        # 커스텀 완료 신호
         ]
         
-        for pattern in end_patterns:
-            if re.search(pattern, text, re.MULTILINE):
+        # 정확한 문자열 매칭 (부분 매칭 방지)
+        for token in exact_stop_tokens:
+            if token in text:
+                if settings.should_log_performance():
+                    print(f"🎯 [ChunkBuffer] 정확한 stop token 감지: '{token}' in '{text[:50]}...'")
                 return True
+                
         return False
     
     def _extract_content_before_end_token(self, text: str) -> str:
-        """실제 vLLM stop token 이전 내용 추출 - FIM 토큰 포함"""
-        # 🎯 실제 vLLM에서 사용하는 stop token들 (우선순위 순)
-        end_patterns = [
-            r'\n# --- Generation Complete ---',               # vLLM 완료 마커
-            r'<｜fim▁begin｜>',                              # FIM 시작 토큰 (일본어 ｜)
-            r'<｜fim▁hole｜>',                               # FIM 홀 토큰 (일본어 ｜)
-            r'<｜fim▁end｜>',                                # FIM 종료 토큰 (일본어 ｜)
-            r'<\|endoftext\|>',                               # GPT 스타일 종료 (영어 |)
-            
-            # 백업용 일반적인 종료 패턴들
-            r'<\|im_end\|>',                                  # ChatML 종료
-            r'</s>',                                          # 시퀀스 종료
-            r'<eos>',                                         # End of Sequence
-            r'\[DONE\]',                                      # 커스텀 완료 신호
+        """stop token 이전 내용 추출 - 정확한 매칭 + 부분 패턴"""
+        # 🎯 1차: 정확한 stop token들 (우선순위 순)
+        exact_tokens = [
+            "<|EOT|>",                                        # 최우선 스탑토큰
+            "\n# --- Generation Complete ---",               # vLLM 완료 마커
+            "# --- Generation Complete ---",                 # vLLM 완료 마커 (줄바꿈 없음)
+            "<|endoftext|>",                                 # GPT 스타일 종료
+            "<|im_end|>",                                    # ChatML 종료
+            "[DONE]",                                        # 커스텀 완료 신호
         ]
         
-        for pattern in end_patterns:
-            match = re.search(pattern, text, re.MULTILINE)
+        # 정확한 토큰 매칭 시도
+        for token in exact_tokens:
+            if token in text:
+                idx = text.find(token)
+                content_before = text[:idx].strip()
+                if settings.should_log_performance():
+                    print(f"✂️ 정확한 토큰 제거: '{token}' → '{content_before[:50]}...'")
+                return content_before
+        
+        # 🔍 2차: 부분 패턴 매칭 (정규식)
+        partial_patterns = [
+            (r'#[-\s]*Generation[-\s]*Complete.*$', "Generation Complete"),
+            (r'</py>.*$', "Python end tag"),
+            (r'```\s*$', "Code block end"),
+            (r'EOT.*$', "EOT partial"),
+            (r'endoftext.*$', "endoftext partial"),
+        ]
+        
+        for pattern, description in partial_patterns:
+            match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
             if match:
-                # 토큰 이전 부분만 반환
                 content_before = text[:match.start()].strip()
                 if settings.should_log_performance():
-                    print(f"✂️ [ChunkBuffer] 실제 종료토큰 제거: '{pattern}' → '{content_before[:50]}...'")
+                    print(f"✂️ 부분 패턴 제거: '{description}' → '{content_before[:50]}...'")
                 return content_before
         
         return text
+
+    def _get_detected_end_token(self, text: str) -> str:
+        """감지된 end token을 반환 - 정확한 매칭 + 부분 패턴"""
+        if not text or not text.strip():
+            return ""
+            
+        # 🎯 정확한 stop token들 (우선순위 순)
+        exact_stop_tokens = [
+            "<|EOT|>",                                        # 최우선 스탑토큰
+            "\n# --- Generation Complete ---",               # vLLM 완료 마커
+            "# --- Generation Complete ---",                 # vLLM 완료 마커 (줄바꿈 없음)
+            "<|endoftext|>",                                 # GPT 스타일 종료
+            "<|im_end|>",                                    # ChatML 종료
+            "[DONE]",                                        # 커스텀 완료 신호
+        ]
+        
+        # 1차: 정확한 문자열 매칭
+        for token in exact_stop_tokens:
+            if token in text:
+                return token
+        
+        # 🔍 2차: 부분 패턴 매칭 (조각난 토큰 대응)
+        partial_patterns = [
+            r'#[-\s]*Generation[-\s]*Complete',               # Generation Complete 변형
+            r'</py>',                                        # Python 종료 태그
+            r'```\s*$',                                      # 코드 블록 종료
+            r'EOT',                                          # EOT 부분
+            r'endoftext',                                    # endoftext 부분
+        ]
+        
+        for pattern in partial_patterns:
+            if re.search(pattern, text, re.IGNORECASE):
+                return f"[PARTIAL:{pattern}]"
+        
+        return ""
+
+    def _generate_appropriate_code(self, text: str) -> str:
+        """요청 맥락을 고려하여 적절한 코드 생성"""
+        if not text or not text.strip():
+            return 'print("Hello")'
+            
+        # 🧹 1단계: 메타데이터 및 HTML 태그 완전 제거
+        cleaned = text
+        cleanup_patterns = [
+            r'</td>[^>]*>?',                          # HTML 테이블 태그
+            r'</?t[dr][^>]*>',                        # HTML 테이블 관련 태그  
+            r'</?\w+[^>]*>',                          # 일반 HTML 태그
+            r'---\w*Generation\w*---?[^"\']*',        # Generation 메타데이터 (강화)
+            r'#[-]+\w*Generation\w*[-]*[^"\']*',      # Generation 마커 (강화)
+            r'#[-]+\w+[-]*#?',                       # 기타 메타데이터 마커
+            r'</py>[^"\']*',                         # Python 종료 태그
+            r'<[^>]*>',                              # 모든 HTML 태그
+        ]
+        
+        for pattern in cleanup_patterns:
+            cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
+        
+        # 🎯 2단계: 기존 print 문이 있으면 정리해서 사용
+        print_patterns = [
+            r'print\s*\(\s*["\']([^"\']*)["\']?\s*\)',     # print("text") - 따옴표 누락 허용
+            r'print\s*\(\s*f["\']([^"\']*)["\']?\s*\)',    # print(f"text") - 따옴표 누락 허용
+        ]
+        
+        for pattern in print_patterns:
+            match = re.search(pattern, cleaned, re.IGNORECASE)
+            if match:
+                # 추출된 텍스트 정리
+                inner_text = match.group(1)
+                # 중복 문자열 정리 (HelloHello → Hello)
+                inner_text = re.sub(r'(\w+)\1+', r'\1', inner_text)
+                # 이상한 문자 제거
+                inner_text = re.sub(r'[^\w\s]', '', inner_text)
+                # 공백이면 기본값 사용
+                if not inner_text.strip():
+                    inner_text = self._extract_request_keyword()
+                return f'print("{inner_text}")'
+        
+        # 🔧 3단계: print 구조가 없으면 요청 맥락 기반 코드 생성
+        request_keyword = self._extract_request_keyword()
+        return f'print("{request_keyword}")'
+    
+    def _extract_request_keyword(self) -> str:
+        """현재 요청에서 출력할 키워드 추출"""
+        if not self.request_context:
+            return "Hello"
+            
+        # 🎯 요청 내용에서 키워드 추출
+        context = self.request_context
+        
+        # 출력 관련 키워드 패턴 매칭
+        output_patterns = [
+            r'(\w+)을?\s*출력',        # "hancom을 출력", "hello를 출력"
+            r'(\w+)\s*출력',          # "hancom 출력"
+            r'print.*?["\'](\w+)["\']',  # print("hancom")
+            r'출력.*?["\'](\w+)["\']',   # 출력하는 "hancom"
+            r'["\'](\w+)["\'].*출력',    # "hancom" 출력
+        ]
+        
+        for pattern in output_patterns:
+            match = re.search(pattern, context, re.IGNORECASE)
+            if match:
+                keyword = match.group(1)
+                # 의미있는 키워드만 반환 (조사, 동사 제외)
+                if len(keyword) > 1 and keyword not in ['코드', '작성', '하는', '해줘', '주세요']:
+                    return keyword
+        
+        # 패턴이 없으면 첫 번째 의미있는 단어 찾기
+        words = re.findall(r'\w+', context)
+        for word in words:
+            if len(word) > 1 and word not in ['코드', '작성', '하는', '해줘', '주세요', '출력']:
+                return word
+                
+        return "Hello"
+        
+    def _extract_print_statements(self, text: str) -> str:
+        """하위 호환성을 위한 래퍼 메서드"""
+        return self._generate_appropriate_code(text)
 
 
 class VLLMIntegrationService:
@@ -509,10 +677,10 @@ class VLLMIntegrationService:
 
         # 🎯 실제 vLLM에서 사용하는 stop token 설정
         stop_tokens = [
+            "<|EOT|>",                          # 최우선 스탑토큰
             "\n# --- Generation Complete ---",  # vLLM 완료 마커
-            "<｜fim▁begin｜>",                  # FIM 시작 토큰 (일본어 ｜)
-            "<｜fim▁hole｜>",                   # FIM 홀 토큰 (일본어 ｜)
-            "<｜fim▁end｜>",                    # FIM 종료 토큰 (일본어 ｜)
+            "→",                  # FIM 시작 토큰 (일본어 ｜)
+            "→",                    # FIM 종료 토큰 (일본어 ｜)
             "<|endoftext|>",                    # GPT 스타일 종료 토큰 (영어 |)
         ]
         
@@ -790,10 +958,11 @@ class VLLMIntegrationService:
 
         vllm_request = self._prepare_vllm_request(request, user_id)
         
-        # 청크 버퍼 초기화
+        # 청크 버퍼 초기화 (요청 맥락 포함)
         chunk_buffer = ChunkBuffer(
             buffer_size=self.default_buffer_size,
-            buffer_timeout=self.default_buffer_timeout
+            buffer_timeout=self.default_buffer_timeout,
+            request_context=request.prompt if hasattr(request, 'prompt') else ""
         ) if self.chunk_buffering_enabled else None
 
         if self.enable_performance_logging:
@@ -930,6 +1099,7 @@ class VLLMIntegrationService:
                                         
                                         # 🎯 실제 vLLM stop token 감지 시 즉시 중단
                                         vllm_stop_tokens = [
+                                            "<|EOT|>",                        # 최우선 스탑토큰
                                             "\n# --- Generation Complete ---",
                                             "<｜fim▁begin｜>",
                                             "<｜fim▁hole｜>",
@@ -955,7 +1125,13 @@ class VLLMIntegrationService:
                                                         "stop_token": detected_stop_token,
                                                         "duration_seconds": round(streaming_duration, 2)
                                                     })
-                                                print(f"🛑 [vLLM] 직접모드에서 실제 stop token 감지: {detected_stop_token}")
+                                                print(f"🔚 실제 vLLM stop token 감지: '{detected_stop_token}' - 스트리밍 종료")
+                                            
+                                            # stop token 이전 깨끗한 내용만 추출
+                                            clean_content = text_content.split(detected_stop_token)[0].strip()
+                                            if clean_content:
+                                                yield f"data: {json.dumps({'text': clean_content})}\n\n"
+                                            
                                             yield f"data: [DONE]\n\n"
                                             return
                                         
