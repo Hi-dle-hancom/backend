@@ -15,6 +15,7 @@ from app.core.logging_config import StructuredLogger
 
 import logging
 from app.services.token_blacklist_service import token_blacklist_service
+from app.services.user_service import UserService
 
 # 토큰 블랙리스트 서비스 통합
 try:
@@ -195,8 +196,6 @@ class APIKeyManager:
     async def generate_api_key_for_db_user(self, email: str, username: str = None) -> Optional[str]:
         """✅ 신규: 실제 DB 사용자를 위한 API 키 생성"""
         try:
-            from app.services.user_service import UserService
-            
             user_service = UserService()
             
             # DB에서 사용자 확인 또는 생성
@@ -294,6 +293,26 @@ class APIKeyManager:
 api_key_manager = APIKeyManager()
 
 
+async def verify_jwt_token_with_db(jwt_token: str) -> Optional[Dict[str, Any]]:
+    """
+    JWT 토큰을 DB 모듈에 전달하여 검증
+    """
+    try:
+        user_service = UserService()
+        user_info = await user_service.get_user_info(jwt_token)
+        
+        if user_info:
+            logger.info(f"JWT 토큰 검증 성공: {user_info.get('email', 'unknown')}")
+            return user_info
+        else:
+            logger.warning("JWT 토큰 검증 실패: DB 모듈에서 거부")
+            return None
+            
+    except Exception as e:
+        logger.error(f"JWT 토큰 검증 중 오류: {e}")
+        return None
+
+
 async def get_current_api_key(
     api_key_header: Optional[str] = Depends(api_key_header),
     bearer_token: Optional[HTTPAuthorizationCredentials] = Depends(security_bearer),
@@ -319,12 +338,87 @@ async def get_current_api_key(
             detail="API Key가 필요합니다. X-API-Key 헤더 또는 Authorization Bearer 토큰을 제공해주세요.",
         )
 
-    # JWT 토큰인 경우 블랙리스트 확인
-    if is_jwt_token and BLACKLIST_ENABLED:
+    # JWT 토큰인 경우 DB 모듈에서 검증
+    if is_jwt_token:
+        # JWT 토큰 블랙리스트 확인
+        if BLACKLIST_ENABLED:
+            try:
+                is_blacklisted = await token_blacklist_service.is_blacklisted(api_key)
+                if is_blacklisted:
+                    logger.warning(f"블랙리스트된 토큰 접근 시도: {api_key[:20]}...")
+                    raise HTTPException(
+                        status_code=401,
+                        detail="토큰이 무효화되었습니다 (로그아웃됨)",
+                        headers={"WWW-Authenticate": "Bearer"},
+                    )
+            except Exception as e:
+                logger.error(f"토큰 블랙리스트 확인 실패: {e}")
+
+        # DB 모듈에서 JWT 토큰 검증
+        user_info = await verify_jwt_token_with_db(api_key)
+        if not user_info:
+            raise HTTPException(
+                status_code=401, 
+                detail="유효하지 않거나 만료된 JWT 토큰입니다.",
+                headers={"WWW-Authenticate": "Bearer"}
+            )
+        
+        # JWT 토큰용 가상 APIKeyModel 생성
+        return APIKeyModel(
+            api_key=api_key,
+            user_id=user_info.get('email', 'unknown'),
+            permissions=['code_generation', 'feedback', 'history'],
+            created_at=datetime.now(),
+            is_active=True,
+            usage_count=0
+        )
+    else:
+        # 기존 API Key 검증 로직
+        api_key_model = api_key_manager.validate_api_key(api_key)
+        if not api_key_model:
+            raise HTTPException(
+                status_code=401, detail="유효하지 않거나 만료된 API Key입니다."
+            )
+        return api_key_model
+
+
+async def get_current_user(
+    api_key_model: APIKeyModel = Depends(get_current_api_key),
+) -> Dict[str, Any]:
+    """
+    현재 사용자 정보를 반환
+    code_generation.py에서 호환성을 위해 추가
+    """
+    return {
+        "user_id": api_key_model.user_id,
+        "api_key": api_key_model.api_key,
+        "permissions": api_key_model.permissions,
+        "is_active": api_key_model.is_active,
+        "usage_count": api_key_model.usage_count,
+        "last_used": api_key_model.last_used,
+    }
+
+
+async def get_current_user_from_jwt(
+    bearer_token: HTTPAuthorizationCredentials = Depends(security_bearer),
+) -> Dict[str, Any]:
+    """
+    JWT 토큰에서 사용자 정보 조회 (개인화 설정용)
+    """
+    if not bearer_token or bearer_token.scheme.lower() != "bearer":
+        raise HTTPException(
+            status_code=401,
+            detail="JWT Bearer 토큰이 필요합니다.",
+            headers={"WWW-Authenticate": "Bearer"}
+        )
+    
+    jwt_token = bearer_token.credentials
+    
+    # 블랙리스트 확인
+    if BLACKLIST_ENABLED:
         try:
-            is_blacklisted = await token_blacklist_service.is_blacklisted(api_key)
+            is_blacklisted = await token_blacklist_service.is_blacklisted(jwt_token)
             if is_blacklisted:
-                logger.warning(f"블랙리스트된 토큰 접근 시도: {api_key[:20]}...")
                 raise HTTPException(
                     status_code=401,
                     detail="토큰이 무효화되었습니다 (로그아웃됨)",
@@ -332,15 +426,86 @@ async def get_current_api_key(
                 )
         except Exception as e:
             logger.error(f"토큰 블랙리스트 확인 실패: {e}")
-
-    # API Key 유효성 검사
-    api_key_model = api_key_manager.validate_api_key(api_key)
-    if not api_key_model:
+    
+    # DB 모듈에서 사용자 정보 조회
+    user_info = await verify_jwt_token_with_db(jwt_token)
+    if not user_info:
         raise HTTPException(
-            status_code=401, detail="유효하지 않거나 만료된 API Key입니다."
+            status_code=401, 
+            detail="유효하지 않거나 만료된 JWT 토큰입니다.",
+            headers={"WWW-Authenticate": "Bearer"}
         )
+    
+    return user_info
 
-    return api_key_model
+
+class JWTUserInfo(BaseModel):
+    """JWT 토큰 기반 사용자 정보"""
+    user_info: Dict[str, Any]
+    jwt_token: str
+    email: str
+    user_id: int
+
+
+async def get_current_user_with_token(
+    bearer_token: HTTPAuthorizationCredentials = Depends(security_bearer),
+) -> JWTUserInfo:
+    """
+    JWT 토큰과 사용자 정보를 함께 반환 (DB 호출용)
+    """
+    if not bearer_token or bearer_token.scheme.lower() != "bearer":
+        raise HTTPException(
+            status_code=401,
+            detail="JWT Bearer 토큰이 필요합니다.",
+            headers={"WWW-Authenticate": "Bearer"}
+        )
+    
+    jwt_token = bearer_token.credentials
+    
+    # 블랙리스트 확인
+    if BLACKLIST_ENABLED:
+        try:
+            is_blacklisted = await token_blacklist_service.is_blacklisted(jwt_token)
+            if is_blacklisted:
+                raise HTTPException(
+                    status_code=401,
+                    detail="토큰이 무효화되었습니다 (로그아웃됨)",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+        except Exception as e:
+            logger.error(f"토큰 블랙리스트 확인 실패: {e}")
+    
+    # DB 모듈에서 사용자 정보 조회
+    user_info = await verify_jwt_token_with_db(jwt_token)
+    if not user_info:
+        raise HTTPException(
+            status_code=401, 
+            detail="유효하지 않거나 만료된 JWT 토큰입니다.",
+            headers={"WWW-Authenticate": "Bearer"}
+        )
+    
+    return JWTUserInfo(
+        user_info=user_info,
+        jwt_token=jwt_token,
+        email=user_info.get('email', ''),
+        user_id=user_info.get('id', 0)
+    )
+
+
+def verify_token(token: str) -> bool:
+    """
+    JWT 토큰 검증
+    """
+    try:
+        if token_blacklist_service.is_blacklisted(token):
+            logger.warning("블랙리스트에 등록된 토큰 접근 시도")
+            return False
+        
+        # 토큰 검증 로직 (실제 구현 필요)
+        return True
+    except Exception as e:
+        logger.warning("토큰 블랙리스트 서비스를 찾을 수 없습니다. 기본 보안 기능으로 작동합니다.")
+        return True
 
 
 def check_permission(required_permission: str):
@@ -416,36 +581,3 @@ async def get_api_key(
     """
     api_key_model = await get_current_api_key(api_key_header, bearer_token)
     return api_key_model.api_key
-
-
-async def get_current_user(
-    api_key_model: APIKeyModel = Depends(get_current_api_key),
-) -> Dict[str, Any]:
-    """
-    현재 사용자 정보를 반환
-    code_generation.py에서 호환성을 위해 추가
-    """
-    return {
-        "user_id": api_key_model.user_id,
-        "api_key": api_key_model.api_key,
-        "permissions": api_key_model.permissions,
-        "is_active": api_key_model.is_active,
-        "usage_count": api_key_model.usage_count,
-        "last_used": api_key_model.last_used,
-    }
-
-
-def verify_token(token: str) -> bool:
-    """
-    JWT 토큰 검증
-    """
-    try:
-        if token_blacklist_service.is_blacklisted(token):
-            logger.warning("블랙리스트에 등록된 토큰 접근 시도")
-            return False
-        
-        # 토큰 검증 로직 (실제 구현 필요)
-        return True
-    except Exception as e:
-        logger.warning("토큰 블랙리스트 서비스를 찾을 수 없습니다. 기본 보안 기능으로 작동합니다.")
-        return True

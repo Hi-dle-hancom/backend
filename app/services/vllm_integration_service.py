@@ -384,7 +384,7 @@ class VLLMIntegrationService:
             if self.connection_retries < self.max_retries:
                 await asyncio.sleep(2 ** self.connection_retries)  # 지수 백오프
                 await self.connect()
-            else:
+        else:
                 raise ConnectionError("vLLM 서버 연결 최대 재시도 횟수 초과")
 
     async def disconnect(self):
@@ -427,7 +427,7 @@ Python 코드:
             
             logger.info(f"개인화된 프롬프트 적용됨: skill_level={user_preferences.get('skill_level', 'unknown')}")
             return personalized_prompt
-        else:
+            else:
             logger.debug("개인화 정보 없음, 기본 프롬프트 사용")
             return base_prompt
 
@@ -471,7 +471,7 @@ Python 코드:
             temperature = min(base_temperature * 1.3, 0.5)
             max_tokens = int(base_max_tokens * 1.5)
             top_p = min(base_top_p * 1.1, 0.9)
-        else:  # complex
+            else:  # complex
             temperature = min(base_temperature * 1.6, 0.7)
             max_tokens = int(base_max_tokens * 2.0)
             top_p = min(base_top_p * 1.2, 0.95)
@@ -541,7 +541,7 @@ Python 코드:
                     line_text = line.decode('utf-8').strip()
 
                     if not line_text or not line_text.startswith('data: '):
-                        continue
+                            continue
 
                     if line_text == 'data: [DONE]':
                         # 최종 응답 분리 및 전송
@@ -637,7 +637,7 @@ Python 코드:
                                                         "personalized": bool(user_preferences)
                                                     }
                                             return
-
+                                        
                                         # 일반 실시간 청크 전송 (개인화 메타데이터 포함)
                                         yield {
                                             "type": "token",
@@ -702,7 +702,7 @@ Python 코드:
                 if chunk.get("type") == "token":
                     accumulated_content += chunk.get("content", "")
                 elif chunk.get("type") == "done":
-                    break
+                        break
                 elif chunk.get("type") == "error":
                     return CodeGenerationResponse(
                         success=False,

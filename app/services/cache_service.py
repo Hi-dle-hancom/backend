@@ -526,9 +526,16 @@ class AdvancedCacheMonitor:
             stats = self.cache.get_stats()
         except Exception as e:
             logger.error(f"캐시 통계 조회 실패: {e}")
-            return
+            # 안전한 기본 stats로 fallback
+            stats = {
+                "hits": 0,
+                "misses": 0,
+                "total_entries": 0,
+                "hit_rate": 0.0,
+                "total_size_mb": 0.0
+            }
 
-        # 메모리 사용량 확인
+        # 메모리 사용량 확인 (안전한 접근)
         memory_mb = stats.get("total_size_mb", 0)
         if memory_mb > self.alert_thresholds["memory_usage_mb"]:
             self._send_alert(
@@ -536,7 +543,7 @@ class AdvancedCacheMonitor:
                     memory_mb:.2f}MB를 초과했습니다 (임계값: {
                     self.alert_thresholds['memory_usage_mb']}MB)", )
 
-        # 히트율 확인
+        # 히트율 확인 (안전한 접근)
         hit_rate = stats.get("hit_rate", 0)
         if hit_rate < self.alert_thresholds["hit_rate_threshold"]:
             self._send_alert(
@@ -544,7 +551,7 @@ class AdvancedCacheMonitor:
                     hit_rate:.2%}로 낮습니다 (임계값: {
                     self.alert_thresholds['hit_rate_threshold']:.2%})", )
 
-        # 엔트리 수 확인
+        # 엔트리 수 확인 (안전한 접근)
         entry_count = stats.get("total_entries", 0)
         if entry_count > self.alert_thresholds["max_entries"]:
             self._send_alert(
@@ -552,12 +559,15 @@ class AdvancedCacheMonitor:
                     self.alert_thresholds['max_entries']}개)", )
 
         # 시스템 메모리 확인
-        system_memory = psutil.virtual_memory()
-        if system_memory.percent > 85:
-            self._send_alert(
-                "HIGH_SYSTEM_MEMORY",
-                f"시스템 메모리 사용률이 {system_memory.percent:.1f}%입니다",
-            )
+        try:
+            system_memory = psutil.virtual_memory()
+            if system_memory.percent > 85:
+                self._send_alert(
+                    "HIGH_SYSTEM_MEMORY",
+                    f"시스템 메모리 사용률이 {system_memory.percent:.1f}%입니다",
+                )
+        except Exception as e:
+            logger.warning(f"시스템 메모리 확인 실패: {e}")
 
     def _send_alert(self, alert_type: str, message: str):
         """알림 발송 (로그 및 히스토리 저장)"""

@@ -166,6 +166,52 @@ def create_application() -> FastAPI:
     # 에러 핸들러 설정
     setup_error_handlers(app)
 
+    # 루트 레벨 health 체크 (최우선 등록)
+    @app.get("/health", tags=["Health"])
+    async def health_check():
+        """간단한 헬스 체크 - 인증 불필요"""
+        return {
+            "status": "healthy",
+            "timestamp": time.time(),
+            "service": "HAPA Backend API",
+            "version": "1.0.0"
+        }
+
+    # 상세 health 체크
+    @app.get("/health/detailed", tags=["Health"])
+    async def detailed_health_check():
+        """상세 헬스 체크"""
+        try:
+            # vLLM 서버 상태 확인
+            vllm_health = await vllm_service.check_health()
+
+            # Enhanced AI 서비스 상태
+            backend_status = await enhanced_ai_service.get_backend_status()
+
+            return {
+                "status": "healthy",
+                "timestamp": time.time(),
+                "service": "HAPA Backend API",
+                "components": {
+                    "vllm_server": {
+                        "status": "healthy" if vllm_health["status"] == "healthy" else "degraded",
+                        "details": vllm_health
+                    },
+                    "ai_backend": {
+                        "status": "healthy",
+                        "current_backend": backend_status["backend_type"],
+                        "vllm_available": backend_status["vllm"]["available"]
+                    }
+                }
+            }
+        except Exception as e:
+            logger.log_error(e, "상세 헬스 체크")
+            return {
+                "status": "degraded",
+                "timestamp": time.time(),
+                "error": str(e)
+            }
+
     # 글로벌 미들웨어 - 요청 처리 시간 측정
     @app.middleware("http")
     async def add_process_time_header(request: Request, call_next):
@@ -201,7 +247,7 @@ def create_application() -> FastAPI:
                 },
                 "features": [
                     "실시간 스트리밍 코드 생성",
-                    "한국어/영어 자동 번역", 
+                    "한국어/영어 자동 번역",
                     "vLLM 멀티 LoRA 모델 지원",
                     "스마트 캐시 시스템",
                     "고성능 AI 추론"
@@ -260,12 +306,6 @@ def create_application() -> FastAPI:
                 status_code=500,
                 content={"error": "vLLM 상태 조회 실패", "details": str(e)}
             )
-
-    # 간단한 헬스 체크 엔드포인트 추가
-    @app.get("/health", tags=["Health"])
-    async def health_check():
-        """서비스 상태 확인"""
-        return {"status": "healthy", "timestamp": time.time()}
 
     return app
 
