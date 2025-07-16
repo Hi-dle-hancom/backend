@@ -208,8 +208,7 @@ class APIMonitor:
     ):
         """AI 추론 로그"""
         self.logger.info(
-            f"AI 추론 완료: {
-                duration:.4f}s (입력: {prompt_length}자, 출력: {response_length}자, 캐시: {cached})",
+            f"AI 추론 완료: {duration:.4f}s (입력: {prompt_length}자, 출력: {response_length}자, 캐시: {cached})",
             duration=duration,
             prompt_length=prompt_length,
             response_length=response_length,
