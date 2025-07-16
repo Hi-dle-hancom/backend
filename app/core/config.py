@@ -25,14 +25,19 @@ class Settings(BaseSettings):
     HOST: str = "0.0.0.0"
     PORT: int = 8000
 
-    # CORS 설정 (VSCode Extension 지원)
-    CORS_ORIGINS: List[str] = [
-        "http://localhost:3000",  # React 웹앱
-        "http://localhost:3001",  # Grafana
-        "http://127.0.0.1:3000",
-        "vscode://",
-        "vscode-webview://*"
-    ]
+    # CORS 설정 (VSCode Extension 지원) - 환경변수로 덮어쓰기 가능
+    CORS_ORIGINS: List[str] = Field(
+        default=[
+            "http://3.13.240.111:3000",  # React 웹앱 (EC2)
+            "http://3.13.240.111:3001",  # Grafana (EC2)
+            "http://localhost:3000",     # 로컬 개발용
+            "http://localhost:3001",     # 로컬 Grafana
+            "http://127.0.0.1:3000",
+            "vscode://",
+            "vscode-webview://*"
+        ],
+        env="ALLOWED_ORIGINS"
+    )
 
     # AI 모델 설정
     MODEL_NAME: str = "python_coding_assistant"
@@ -41,7 +46,7 @@ class Settings(BaseSettings):
     AI_MODEL_ENDPOINT: Optional[str] = None
 
     # 보안 설정
-    SECRET_KEY: str = "hapa_secret_key_for_development_only_change_in_production"
+    SECRET_KEY: str = Field(default="", env="SECRET_KEY")
     API_KEY_EXPIRY_DAYS: int = 365
 
     # 로깅 설정 (환경별 차별화)
@@ -121,7 +126,7 @@ class Settings(BaseSettings):
     # 보안 헤더 설정
     ENABLE_SECURITY_HEADERS: bool = True
     ENABLE_CSRF_PROTECTION: bool = False
-    ALLOWED_HOSTS: List[str] = ["localhost", "127.0.0.1", "0.0.0.0"]
+    ALLOWED_HOSTS: List[str] = ["localhost", "127.0.0.1", "0.0.0.0", "3.13.240.111"]
 
     # 파일 업로드 설정
     MAX_FILE_SIZE: str = "10MB"
@@ -142,7 +147,7 @@ class Settings(BaseSettings):
     BACKUP_RETENTION_DAYS: int = 30
 
     # DB Module 마이크로서비스 설정
-    DB_MODULE_URL: str = "http://localhost:8001"
+    DB_MODULE_URL: str = "http://3.13.240.111:8001"
     DB_MODULE_TIMEOUT: int = 10
 
     # 온보딩 테스트 설정 (선택적)

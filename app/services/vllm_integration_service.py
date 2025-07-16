@@ -395,12 +395,117 @@ class VLLMIntegrationService:
         self.is_connected = False
         logger.info("vLLM 서버 연결 종료")
 
+    def _build_enhanced_prompt(self, request: CodeGenerationRequest, user_preferences: Optional[Dict[str, Any]] = None) -> str:
+        """향상된 프롬프트 구성 (개인화 정보 반영)"""
+        
+        # 기본 시스템 프롬프트
+        system_prompt = """당신은 고품질 Python 코드를 생성하는 AI 코딩 어시스턴트입니다.
+다음 규칙을 따라 코드를 생성해주세요:
+1. 완전하고 실행 가능한 코드를 작성
+2. 적절한 주석과 문서화 포함
+3. 파이썬 최선의 관례(best practices) 준수
+4. 간결하고 읽기 쉬운 코드 작성"""
+
+        # 컨텍스트가 있는 경우 추가
+        context_section = ""
+        if request.context and request.context.strip():
+            context_section = f"\n\n기존 코드 컨텍스트:\n```python\n{request.context}\n```"
+
+        # 기본 프롬프트 조합
+        base_prompt = f"""{system_prompt}
+
+사용자 요청: {request.prompt}{context_section}
+
+Python 코드:
+```python"""
+
+        # 사용자 개인화 정보가 있는 경우 적용
+        if user_preferences:
+            # 개인화된 프롬프트 생성 (code_generation.py에서 정의한 함수 사용)
+            from app.api.endpoints.code_generation import build_personalized_prompt
+            personalized_prompt = build_personalized_prompt(base_prompt, user_preferences)
+            
+            logger.info(f"개인화된 프롬프트 적용됨: skill_level={user_preferences.get('skill_level', 'unknown')}")
+            return personalized_prompt
+        else:
+            logger.debug("개인화 정보 없음, 기본 프롬프트 사용")
+            return base_prompt
+
+    def _prepare_vllm_payload(self, request: CodeGenerationRequest, complexity, user_preferences: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """vLLM 요청 페이로드 준비 (개인화 정보 반영)"""
+        
+        # 사용자 선호도에 따른 파라미터 조정
+        base_temperature = 0.3
+        base_max_tokens = 400
+        base_top_p = 0.8
+        
+        if user_preferences:
+            skill_level = user_preferences.get("skill_level", "intermediate")
+            code_style = user_preferences.get("code_style", "standard")
+            safety_level = user_preferences.get("safety_level", "standard")
+            
+            # 스킬 레벨에 따른 토큰 수 조정
+            if skill_level == "beginner":
+                base_max_tokens = int(base_max_tokens * 1.5)  # 더 상세한 설명
+            elif skill_level == "expert":
+                base_max_tokens = int(base_max_tokens * 0.8)  # 간결한 코드
+            
+            # 코드 스타일에 따른 temperature 조정
+            if code_style == "concise":
+                base_temperature = max(base_temperature * 0.8, 0.1)
+            elif code_style == "detailed":
+                base_temperature = min(base_temperature * 1.2, 0.4)
+            
+            # 안전성 레벨에 따른 top_p 조정
+            if safety_level == "enhanced":
+                base_top_p = max(base_top_p * 0.9, 0.7)
+            elif safety_level == "minimal":
+                base_top_p = min(base_top_p * 1.1, 0.95)
+        
+        # 복잡도별 추가 파라미터 조정
+        if complexity.value == 'simple':
+            temperature = base_temperature
+            max_tokens = base_max_tokens
+            top_p = base_top_p
+        elif complexity.value == 'medium':
+            temperature = min(base_temperature * 1.3, 0.5)
+            max_tokens = int(base_max_tokens * 1.5)
+            top_p = min(base_top_p * 1.1, 0.9)
+        else:  # complex
+            temperature = min(base_temperature * 1.6, 0.7)
+            max_tokens = int(base_max_tokens * 2.0)
+            top_p = min(base_top_p * 1.2, 0.95)
+        
+        # 개인화된 프롬프트 구성
+        enhanced_prompt = self._build_enhanced_prompt(request, user_preferences)
+        
+        payload = {
+            "model": "CodeLlama-7b-Python-hf",
+            "prompt": enhanced_prompt,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "top_p": top_p,
+            "frequency_penalty": 0.1,
+            "presence_penalty": 0.1,
+            "stream": True,
+            "stop": ["[DONE]"]
+        }
+        
+        if user_preferences:
+            logger.info(f"개인화된 vLLM 페이로드 준비 완료: skill={user_preferences.get('skill_level')}, style={user_preferences.get('code_style')}, complexity={complexity.value}")
+        else:
+            logger.debug(f"기본 vLLM 페이로드 준비 완료 (복잡도: {complexity.value})")
+        
+        return payload
+
     async def generate_code_streaming(
         self,
         request: CodeGenerationRequest,
+        user_id: str,
+        user_preferences: Optional[Dict[str, Any]] = None,
         chunk_callback: Optional[callable] = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
-        """적응형 스트리밍 코드 생성 (구조화된 응답)"""
+        """적응형 스트리밍 코드 생성 (개인화 정보 반영)"""
         
         start_time = time.time()
         self.total_requests += 1
@@ -413,10 +518,11 @@ class VLLMIntegrationService:
                 request.context
             )
             
-            # 요청 준비
-            payload = self._prepare_vllm_payload(request, complexity)
+            # 개인화된 요청 준비
+            payload = self._prepare_vllm_payload(request, complexity, user_preferences)
             
-            logger.info(f"구조화된 스트리밍 요청 시작 (복잡도: {complexity.value})")
+            personalization_info = f"(개인화: {bool(user_preferences)})" if user_preferences else "(기본 모드)"
+            logger.info(f"구조화된 스트리밍 요청 시작 {personalization_info} (복잡도: {complexity.value})")
             
             if not self.is_connected:
                 await self.connect()
@@ -450,7 +556,8 @@ class VLLMIntegrationService:
                                     "is_complete": False,
                                     "metadata": {
                                         "chunk_type": "explanation",
-                                        "complexity": complexity.value
+                                        "complexity": complexity.value,
+                                        "personalized": bool(user_preferences)
                                     }
                                 }
                             
@@ -463,7 +570,9 @@ class VLLMIntegrationService:
                                     "metadata": {
                                         "chunk_type": "code",
                                         "complexity": complexity.value,
-                                        "parsing_confidence": parsed_response["metadata"]["parsing_confidence"]
+                                        "parsing_confidence": parsed_response["metadata"]["parsing_confidence"],
+                                        "personalized": bool(user_preferences),
+                                        "user_preferences": user_preferences if user_preferences else {}
                                     }
                                 }
                             
@@ -474,12 +583,14 @@ class VLLMIntegrationService:
                                 "is_complete": True,
                                 "metadata": {
                                     **self.adaptive_buffer.get_metrics(),
-                                    **parsed_response["metadata"]
+                                    **parsed_response["metadata"],
+                                    "personalized": bool(user_preferences),
+                                    "personalization_applied": user_preferences if user_preferences else None
                                 }
                             }
                         break
                     
-                    # JSON 파싱
+                    # JSON 파싱 및 처리 (기존 로직 유지)
                     try:
                         json_data = json.loads(line_text[6:])  # 'data: ' 제거
                         
@@ -493,7 +604,7 @@ class VLLMIntegrationService:
                                 # 적응형 버퍼에 추가
                                 ready_chunks = self.adaptive_buffer.add_chunk(content)
                                 
-                                # 실시간 청크 전송 (타입 구분 없이)
+                                # 실시간 청크 전송 (개인화 메타데이터 포함)
                                 for chunk in ready_chunks:
                                     if chunk.strip():
                                         # Stop token 감지
@@ -513,7 +624,8 @@ class VLLMIntegrationService:
                                                         "type": "explanation",
                                                         "content": parsed_response["explanation"],
                                                         "is_complete": True,
-                                                        "stop_reason": reason
+                                                        "stop_reason": reason,
+                                                        "personalized": bool(user_preferences)
                                                     }
                                                 
                                                 if parsed_response["code"]:
@@ -521,11 +633,12 @@ class VLLMIntegrationService:
                                                         "type": "code",
                                                         "content": parsed_response["code"],
                                                         "is_complete": True,
-                                                        "stop_reason": reason
+                                                        "stop_reason": reason,
+                                                        "personalized": bool(user_preferences)
                                                     }
                                             return
 
-                                        # 일반 실시간 청크 전송 (프리뷰용)
+                                        # 일반 실시간 청크 전송 (개인화 메타데이터 포함)
                                         yield {
                                             "type": "token",
                                             "content": chunk,
@@ -533,7 +646,8 @@ class VLLMIntegrationService:
                                             "metadata": {
                                                 "complexity": complexity.value,
                                                 "chunk_size": len(chunk),
-                                                "is_preview": True
+                                                "is_preview": True,
+                                                "personalized": bool(user_preferences)
                                             }
                                         }
                                         
@@ -553,7 +667,8 @@ class VLLMIntegrationService:
             response_time = time.time() - start_time
             self._update_metrics(response_time, True)
             
-            logger.info(f"구조화된 스트리밍 완료 (응답시간: {response_time:.2f}초)")
+            personalization_msg = f" (개인화 적용: {user_preferences.get('skill_level', 'unknown')})" if user_preferences else ""
+            logger.info(f"구조화된 스트리밍 완료{personalization_msg} (응답시간: {response_time:.2f}초)")
 
         except Exception as e:
             self.failed_requests += 1
@@ -566,69 +681,75 @@ class VLLMIntegrationService:
                 "type": "error",
                 "content": f"코드 생성 중 오류가 발생했습니다: {str(e)}",
                 "is_complete": True,
-                "error": str(e)
+                "error": str(e),
+                "personalized": bool(user_preferences)
             }
 
-    def _prepare_vllm_payload(self, request: CodeGenerationRequest, complexity) -> Dict[str, Any]:
-        """vLLM 요청 페이로드 준비"""
+    async def generate_code_sync(
+        self,
+        request: CodeGenerationRequest,
+        user_id: str,
+        user_preferences: Optional[Dict[str, Any]] = None
+    ) -> CodeGenerationResponse:
+        """동기식 코드 생성 (개인화 정보 반영)"""
         
-        # 복잡도별 파라미터 조정
-        if complexity.value == 'simple':
-            temperature = 0.3
-            max_tokens = 400
-            top_p = 0.8
-        elif complexity.value == 'medium':
-            temperature = 0.5
-            max_tokens = 600
-            top_p = 0.9
-        else:  # complex
-            temperature = 0.7
-            max_tokens = 800
-            top_p = 0.95
+        start_time = time.time()
+        accumulated_content = ""
         
-        # 기본 프롬프트 구성
-        enhanced_prompt = self._build_enhanced_prompt(request)
-        
-        payload = {
-            "model": "CodeLlama-7b-Python-hf",
-            "prompt": enhanced_prompt,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "top_p": top_p,
-            "frequency_penalty": 0.1,
-            "presence_penalty": 0.1,
-            "stream": True,
-            "stop": ["[DONE]"]  # 단순화된 stop token
-        }
-        
-        logger.debug(f"vLLM 페이로드 준비 완료 (복잡도: {complexity.value})")
-        return payload
-
-    def _build_enhanced_prompt(self, request: CodeGenerationRequest) -> str:
-        """향상된 프롬프트 구성"""
-        
-        # 기본 시스템 프롬프트
-        system_prompt = """당신은 고품질 Python 코드를 생성하는 AI 코딩 어시스턴트입니다.
-다음 규칙을 따라 코드를 생성해주세요:
-1. 완전하고 실행 가능한 코드를 작성
-2. 적절한 주석과 문서화 포함
-3. 파이썬 최선의 관례(best practices) 준수
-4. 간결하고 읽기 쉬운 코드 작성"""
-
-        # 컨텍스트가 있는 경우 추가
-        context_section = ""
-        if request.context and request.context.strip():
-            context_section = f"\n\n기존 코드 컨텍스트:\n```python\n{request.context}\n```"
-
-        # 최종 프롬프트 조합
-        full_prompt = f"""{system_prompt}
-
-사용자 요청: {request.prompt}{context_section}
-
-Python 코드:
-```python"""
-
-        return full_prompt
+        try:
+            # 스트리밍으로 데이터 수집
+            async for chunk in self.generate_code_streaming(request, user_id, user_preferences):
+                if chunk.get("type") == "token":
+                    accumulated_content += chunk.get("content", "")
+                elif chunk.get("type") == "done":
+                    break
+                elif chunk.get("type") == "error":
+                    return CodeGenerationResponse(
+                        success=False,
+                        generated_code="",
+                        error_message=chunk.get("content", "알 수 없는 오류"),
+                        model_used="vllm",
+                        processing_time=time.time() - start_time,
+                        token_usage={"total_tokens": 0},
+                    )
+            
+            # 응답 분리
+            parsed_response = response_parser.parse_response(accumulated_content)
+            
+            # 성공 응답 구성
+            response = CodeGenerationResponse(
+                success=True,
+                generated_code=parsed_response["code"],
+                explanation=parsed_response["explanation"],
+                model_used="vllm",
+                processing_time=time.time() - start_time,
+                token_usage={"total_tokens": len(accumulated_content.split())},
+                confidence_score=parsed_response["metadata"]["parsing_confidence"]
+            )
+            
+            # 개인화 메타데이터 추가
+            if user_preferences:
+                if not hasattr(response, 'metadata'):
+                    response.metadata = {}
+                response.metadata.update({
+                    "personalized": True,
+                    "user_preferences": user_preferences,
+                    "skill_level": user_preferences.get("skill_level", "unknown"),
+                    "code_style": user_preferences.get("code_style", "unknown")
+                })
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"동기식 코드 생성 실패: {e}")
+            return CodeGenerationResponse(
+                success=False,
+                generated_code="",
+                error_message=f"코드 생성 실패: {str(e)}",
+                model_used="vllm",
+                processing_time=time.time() - start_time,
+                token_usage={"total_tokens": 0},
+            )
 
     def _update_metrics(self, response_time: float, success: bool):
         """성능 메트릭 업데이트"""

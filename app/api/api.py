@@ -19,6 +19,7 @@ from app.api.endpoints import (
     custom_agents,
     error_monitoring,
     feedback,
+    health,
     history,
     metrics,
     users,
@@ -29,6 +30,10 @@ from app.api.endpoints import (
 api_router = APIRouter()
 
 # 각 엔드포인트 라우터 추가
+# Health Check (최우선)
+api_router.include_router(health.router, prefix="/health", tags=["Health & Status"])
+
+# Core API Endpoints
 api_router.include_router(code_generation.router, tags=["Code Generation (Enhanced 통합)"])
 api_router.include_router(
     feedback.router,

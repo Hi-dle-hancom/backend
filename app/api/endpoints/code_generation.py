@@ -48,25 +48,169 @@ from app.core.security import (
 # Helper 함수들 구현 (누락된 함수들)
 # =============================================================================
 
+import httpx
+import jwt
+from app.core.config import settings
+
+async def decode_jwt_and_get_user_id(access_token: str) -> Optional[str]:
+    """JWT 토큰에서 사용자 ID 추출"""
+    try:
+        # JWT 시크릿 키 가져오기 (환경변수 또는 설정에서)
+        secret_key = getattr(settings, 'JWT_SECRET_KEY', 'default_secret')
+        
+        # JWT 토큰 디코딩
+        payload = jwt.decode(access_token, secret_key, algorithms=["HS256"])
+        
+        # 사용자 ID 추출 (일반적으로 'sub' 또는 'user_id' 필드)
+        user_id = payload.get('sub') or payload.get('user_id')
+        
+        if user_id:
+            logger.info(f"JWT 토큰에서 사용자 ID 추출 성공: {user_id}")
+            return str(user_id)
+        else:
+            logger.warning("JWT 토큰에 사용자 ID가 없습니다")
+            return None
+            
+    except jwt.ExpiredSignatureError:
+        logger.warning("JWT 토큰이 만료되었습니다")
+        return None
+    except jwt.InvalidTokenError as e:
+        logger.warning(f"유효하지 않은 JWT 토큰: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"JWT 토큰 디코딩 중 오류: {e}")
+        return None
+
+
+async def fetch_user_settings_from_db(user_id: str) -> Optional[Dict[str, Any]]:
+    """DB-Module에서 사용자 개인화 설정 조회"""
+    try:
+        # DB-Module API 엔드포인트
+        db_module_url = getattr(settings, 'DB_MODULE_URL', 'http://localhost:8001')
+        timeout = getattr(settings, 'DB_MODULE_TIMEOUT', 10)
+        
+        # DB-Module에서 사용자 설정 조회
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{db_module_url}/settings/options",
+                headers={"Authorization": f"Bearer {user_id}"},  # 임시: user_id를 토큰으로 사용
+                timeout=timeout
+            )
+            
+            if response.status_code == 200:
+                settings_data = response.json()
+                logger.info(f"DB에서 사용자 설정 조회 성공: {user_id}")
+                return settings_data
+            else:
+                logger.warning(f"DB 설정 조회 실패: {response.status_code} - {user_id}")
+                return None
+                
+    except httpx.TimeoutException:
+        logger.warning(f"DB 설정 조회 타임아웃: {user_id}")
+        return None
+    except Exception as e:
+        logger.error(f"DB 설정 조회 중 오류: {e}")
+        return None
+
+
+def map_db_settings_to_ai_preferences(db_settings: Dict[str, Any]) -> Dict[str, Any]:
+    """DB 설정을 AI 개인화 선호도로 매핑"""
+    try:
+        # DB 설정 옵션에서 사용자 선호도 추출
+        options = db_settings.get('options', [])
+        
+        # 기본값 설정
+        preferences = {
+            "safety_level": "standard",
+            "code_style": "standard", 
+            "skill_level": "intermediate",
+            "project_context": "general_purpose"
+        }
+        
+        # DB 옵션을 AI 선호도로 매핑
+        for option in options:
+            setting_type = option.get('setting_type', '')
+            option_value = option.get('option_value', '')
+            
+            # Python 스킬 레벨 매핑
+            if setting_type == 'python_skill_level':
+                if option_value in ['beginner', 'intermediate', 'advanced', 'expert']:
+                    preferences['skill_level'] = option_value
+            
+            # 코드 출력 구조 매핑
+            elif setting_type == 'code_output_structure':
+                if option_value == 'minimal':
+                    preferences['code_style'] = 'concise'
+                elif option_value == 'standard':
+                    preferences['code_style'] = 'standard'
+                elif option_value == 'detailed':
+                    preferences['code_style'] = 'detailed'
+            
+            # 설명 스타일 매핑
+            elif setting_type == 'explanation_style':
+                if option_value == 'brief':
+                    preferences['safety_level'] = 'minimal'
+                elif option_value == 'standard':
+                    preferences['safety_level'] = 'standard'
+                elif option_value in ['detailed', 'educational']:
+                    preferences['safety_level'] = 'enhanced'
+            
+            # 프로젝트 컨텍스트 매핑
+            elif setting_type == 'project_context':
+                if option_value in ['web_development', 'data_science', 'automation', 'general_purpose']:
+                    preferences['project_context'] = option_value
+        
+        logger.info(f"DB 설정을 AI 선호도로 매핑 완료: {preferences}")
+        return preferences
+        
+    except Exception as e:
+        logger.error(f"DB 설정 매핑 중 오류: {e}")
+        # 오류 시 기본값 반환
+        return {
+            "safety_level": "standard",
+            "code_style": "standard", 
+            "skill_level": "intermediate",
+            "project_context": "general_purpose"
+        }
+
+
+def default_preferences() -> Dict[str, Any]:
+    """기본 사용자 선호도 반환"""
+    return {
+        "safety_level": "standard",
+        "code_style": "standard", 
+        "skill_level": "intermediate",
+        "project_context": "general_purpose"
+    }
+
+
 async def _get_user_preferences(
     access_token: Optional[str], 
     user_profile: Optional[Dict[str, Any]], 
     user_id: str
 ) -> Optional[Dict[str, Any]]:
-    """사용자 개인화 설정 조회"""
+    """사용자 개인화 설정 조회 (실제 DB 연동 구현)"""
     try:
-        # JWT 토큰이 있는 경우 DB에서 사용자 설정 조회
+        # 1단계: JWT 토큰이 있는 경우 실제 DB에서 사용자 설정 조회
         if access_token:
-            # 실제 구현에서는 JWT 토큰을 통해 사용자 정보 조회
-            # 현재는 기본값 반환
-            return {
-                "safety_level": "standard",
-                "code_style": "standard", 
-                "skill_level": "intermediate",
-                "project_context": "general_purpose"
-            }
+            # JWT 토큰에서 사용자 ID 추출
+            jwt_user_id = await decode_jwt_and_get_user_id(access_token)
+            
+            if jwt_user_id:
+                # DB에서 사용자 설정 조회
+                db_settings = await fetch_user_settings_from_db(jwt_user_id)
+                
+                if db_settings:
+                    # DB 설정을 AI 선호도로 변환
+                    return map_db_settings_to_ai_preferences(db_settings)
+                else:
+                    logger.info(f"DB 설정이 없어 기본값 사용: {jwt_user_id}")
+                    return default_preferences()
+            else:
+                logger.warning("JWT 토큰에서 사용자 ID 추출 실패")
+                return default_preferences()
         
-        # userProfile이 있는 경우 활용
+        # 2단계: userProfile이 있는 경우 활용
         if user_profile:
             return {
                 "safety_level": user_profile.get("safety_level", "standard"),
@@ -74,12 +218,106 @@ async def _get_user_preferences(
                 "skill_level": user_profile.get("skill_level", "intermediate"),
                 "project_context": user_profile.get("project_context", "general_purpose")
             }
-            
-        return None
+        
+        # 3단계: 모든 개인화 정보가 없는 경우 기본값
+        logger.info(f"개인화 정보가 없어 기본값 사용: {user_id}")
+        return default_preferences()
         
     except Exception as e:
         logger.warning(f"사용자 설정 조회 실패: {e}")
-        return None
+        return default_preferences()
+
+
+async def _optimize_request_for_user(
+    request: CodeGenerationRequest, 
+    user_preferences: Dict[str, Any]
+) -> CodeGenerationRequest:
+    """사용자 선호도에 따른 요청 최적화"""
+    try:
+        import copy
+        optimized_request = copy.deepcopy(request)
+        
+        # 스킬 레벨에 따른 max_tokens 조정
+        skill_level = user_preferences.get("skill_level", "intermediate")
+        if skill_level == "beginner":
+            # 초급자: 더 상세한 설명 필요
+            optimized_request.max_tokens = min(optimized_request.max_tokens * 1.5, 1500)
+        elif skill_level == "expert":
+            # 전문가: 간결한 코드 선호
+            optimized_request.max_tokens = max(optimized_request.max_tokens * 0.8, 300)
+        
+        # 코드 스타일에 따른 temperature 조정
+        code_style = user_preferences.get("code_style", "standard")
+        if code_style == "concise":
+            optimized_request.temperature = max(optimized_request.temperature * 0.8, 0.1)
+        elif code_style == "detailed":
+            optimized_request.temperature = min(optimized_request.temperature * 1.2, 0.4)
+        
+        # 안전성 레벨에 따른 top_p 조정
+        safety_level = user_preferences.get("safety_level", "standard")
+        if safety_level == "enhanced":
+            optimized_request.top_p = max(optimized_request.top_p * 0.9, 0.7)
+        elif safety_level == "minimal":
+            optimized_request.top_p = min(optimized_request.top_p * 1.1, 0.95)
+        
+        logger.info(f"사용자 선호도 기반 요청 최적화 완료: skill_level={skill_level}, code_style={code_style}")
+        return optimized_request
+        
+    except Exception as e:
+        logger.error(f"요청 최적화 중 오류: {e}")
+        return request
+
+
+def build_personalized_prompt(base_prompt: str, user_preferences: Dict[str, Any]) -> str:
+    """사용자 선호도를 반영한 개인화된 프롬프트 생성"""
+    try:
+        skill_level = user_preferences.get("skill_level", "intermediate")
+        code_style = user_preferences.get("code_style", "standard")
+        project_context = user_preferences.get("project_context", "general_purpose")
+        safety_level = user_preferences.get("safety_level", "standard")
+        
+        # 스킬 레벨별 지시사항
+        skill_instructions = {
+            "beginner": "초급자를 위해 상세한 주석과 설명을 포함하여 단계별로 설명해주세요.",
+            "intermediate": "중급자 수준에 맞춰 적절한 주석과 함께 실용적인 코드를 작성해주세요.",
+            "advanced": "고급 사용자를 위해 효율적이고 최적화된 코드를 작성해주세요.",
+            "expert": "전문가 수준에 맞춰 간결하고 고성능의 코드를 작성해주세요."
+        }
+        
+        # 코드 스타일별 지시사항
+        style_instructions = {
+            "concise": "최대한 간결하고 핵심적인 코드만 작성해주세요.",
+            "standard": "일반적인 코딩 스타일로 가독성 좋은 코드를 작성해주세요.",
+            "detailed": "상세한 주석과 예외처리를 포함한 완전한 코드를 작성해주세요."
+        }
+        
+        # 프로젝트 컨텍스트별 지시사항
+        context_instructions = {
+            "web_development": "웹 개발 환경에 최적화된 코드로 작성해주세요.",
+            "data_science": "데이터 분석 및 과학 계산에 적합한 코드로 작성해주세요.",
+            "automation": "자동화 스크립트에 적합한 안정적인 코드로 작성해주세요.",
+            "general_purpose": "범용적으로 사용할 수 있는 코드로 작성해주세요."
+        }
+        
+        # 개인화된 프롬프트 구성
+        personalization_prefix = f"""[사용자 개인화 설정]
+- 스킬 레벨: {skill_level} ({skill_instructions.get(skill_level, '')})
+- 코드 스타일: {code_style} ({style_instructions.get(code_style, '')})
+- 프로젝트 컨텍스트: {project_context} ({context_instructions.get(project_context, '')})
+- 안전성 레벨: {safety_level}
+
+위 설정을 반영하여 다음 요청에 응답해주세요:
+
+"""
+        
+        personalized_prompt = personalization_prefix + base_prompt
+        
+        logger.info(f"개인화된 프롬프트 생성 완료: skill_level={skill_level}, style={code_style}")
+        return personalized_prompt
+        
+    except Exception as e:
+        logger.error(f"개인화된 프롬프트 생성 중 오류: {e}")
+        return base_prompt
 
 
 async def _evaluate_code_quality(
@@ -483,7 +721,7 @@ async def generate_code_stream(
     **지원 기능:**
     - 🔄 **실시간 스트리밍**: Server-Sent Events 형식으로 점진적 응답
     - 🌐 **자동 번역**: 모델별 한국어→영어 번역 전략
-    - �� **모델 최적화**: 요청 타입에 따른 프롬프트 최적화
+    - 📊 **모델 최적화**: 요청 타입에 따른 프롬프트 최적화
     - 📊 **상세 로깅**: 요청 추적 및 성능 모니터링
     
     **🆕 Enhanced 기능 (enhanced=true):**
@@ -556,31 +794,17 @@ async def generate_code_stream(
             try:
                 # Enhanced 모드에서는 개인화된 프롬프트 적용
                 if enhanced and user_preferences:
-                    # 사용자 선호도에 따른 프롬프트 최적화
+                    # 사용자 선호도에 따른 요청 최적화
                     optimized_request = await _optimize_request_for_user(request, user_preferences)
-                    async for chunk in vllm_service.generate_code_stream(optimized_request, user_id):
-                        # Enhanced 메타데이터 추가
-                        if isinstance(chunk, str) and chunk.startswith("data: "):
-                            try:
-                                chunk_data = json.loads(chunk[6:].strip())
-                                if isinstance(chunk_data, dict) and "enhanced_metadata" not in chunk_data:
-                                    chunk_data["enhanced_metadata"] = {
-                                        "personalized": True,
-                                        "safety_level": user_preferences.get("safety_level", "standard"),
-                                        "user_style": user_preferences.get("code_style", "standard")
-                                    }
-                                    yield f"data: {json.dumps(chunk_data)}\n\n"
-                                else:
-                                    yield chunk
-                            except:
-                                yield chunk
-                        else:
-                            yield chunk
+                    # vLLM 서비스에 개인화 정보 전달
+                    async for chunk in vllm_service.generate_code_streaming(optimized_request, user_id, user_preferences):
+                        # vLLM에서 이미 개인화 메타데이터가 포함되어 있음
+                        yield f"data: {json.dumps(chunk)}\n\n"
                 else:
                     # 🚀 기본 모드에서도 최적화 적용 (복잡도 분석 + 동적 파라미터)
                     optimized_request = _apply_performance_optimization(request)
-                    async for chunk in vllm_service.generate_code_stream(optimized_request, user_id):
-                        yield chunk
+                    async for chunk in vllm_service.generate_code_streaming(optimized_request, user_id):
+                        yield f"data: {json.dumps(chunk)}\n\n"
 
             except Exception as e:
                 error_msg = f"스트리밍 중 오류 발생: {str(e)}"
@@ -711,7 +935,7 @@ async def generate_code(
         if enhanced and user_preferences:
             # 사용자 선호도에 따른 요청 최적화
             optimized_request = await _optimize_request_for_user(request, user_preferences)
-            response = await vllm_service.generate_code_sync(optimized_request, user_id)
+            response = await vllm_service.generate_code_sync(optimized_request, user_id, user_preferences)
             
             # Enhanced 모드에서 품질 평가
             quality_score = await _evaluate_code_quality(response.generated_code, user_preferences)

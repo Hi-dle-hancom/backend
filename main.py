@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse
 from app.core.config import settings
 from app.core.logging_config import setup_logging
 from app.core.structured_logger import StructuredLogger
+from app.core.settings_manager import get_settings
 
 # API imports
 from app.api.api import api_router
@@ -27,6 +28,7 @@ from app.api.api import api_router
 from app.services.enhanced_ai_model import enhanced_ai_service
 from app.services.vllm_integration_service import vllm_service
 from app.middleware.enhanced_logging_middleware import EnhancedLoggingMiddleware
+from app.middleware.security_headers import add_security_middleware
 
 # Exception handlers
 from app.api.endpoints.error_monitoring import setup_error_handlers
@@ -128,23 +130,34 @@ def create_application() -> FastAPI:
         lifespan=lifespan
     )
 
-    # CORS 미들웨어 설정
+    # 보안 미들웨어 추가 (우선순위 높음)
+    hapa_settings = get_settings()
+    security_config = {
+        "environment": hapa_settings.environment,
+        "rate_limit_requests": hapa_settings.security.rate_limit_requests,
+        "enable_csp": True,
+        "enable_hsts": hapa_settings.security.ssl_enabled
+    }
+    add_security_middleware(app, security_config)
+
+    # CORS 미들웨어 설정 (보안 강화)
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.CORS_ORIGINS,
+        allow_origins=hapa_settings.security.allowed_origins,
         allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"]
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type", "X-API-Key"],
+        expose_headers=["X-Process-Time", "X-Rate-Limit-Remaining"]
     )
 
     # Enhanced 로깅 미들웨어 추가
     app.add_middleware(EnhancedLoggingMiddleware)
 
     # Trusted Host 미들웨어 (운영환경)
-    if not settings.DEBUG:
+    if not hapa_settings.debug:
         app.add_middleware(
             TrustedHostMiddleware,
-            allowed_hosts=settings.ALLOWED_HOSTS
+            allowed_hosts=hapa_settings.security.allowed_hosts
         )
 
     # API 라우터 포함
