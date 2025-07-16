@@ -531,8 +531,10 @@ def check_rate_limit_dependency(endpoint: str, limit: int):
     ) -> APIKeyModel:
         if not api_key_manager.check_rate_limit(
                 api_key.api_key, endpoint, limit):
-            raise HTTPException(status_code=429, detail=f"Rate limit 초과: {endpoint} 엔드포인트는 {
-                settings.RATE_LIMIT_WINDOW_MINUTES}분당 {limit}회까지 요청 가능합니다.", )
+            raise HTTPException(
+                status_code=429, 
+                detail=f"Rate limit 초과: {endpoint} 엔드포인트는 {settings.RATE_LIMIT_WINDOW_MINUTES}분당 {limit}회까지 요청 가능합니다.",
+            )
         return api_key
 
     return rate_limit_checker
