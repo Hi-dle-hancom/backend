@@ -411,7 +411,7 @@ async def get_current_user_from_jwt(
             detail="JWT Bearer 토큰이 필요합니다.",
             headers={"WWW-Authenticate": "Bearer"}
         )
-    
+    print("bearer_token", bearer_token)
     jwt_token = bearer_token.credentials
     
     # 블랙리스트 확인
