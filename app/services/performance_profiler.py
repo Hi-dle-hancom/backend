@@ -53,9 +53,8 @@ class PerformanceProfiler:
             }
 
             logger.info(
-                f"[PERFORMANCE] {function_name}: {
-                    execution_time:.4f}s, Memory: {
-                    memory_diff / 1024 / 1024:.2f}MB")
+                f"[PERFORMANCE] {function_name}: {execution_time:.4f}s, Memory: {memory_diff / 1024 / 1024:.2f}MB"
+            )
 
     def profile_decorator(self, function_name: str = None):
         """데코레이터를 통한 함수 프로파일링"""
