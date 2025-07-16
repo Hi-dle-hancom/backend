@@ -52,7 +52,7 @@ class APIKeyManager:
 
     def __init__(self):
         # 통일된 데이터 경로 사용 (프로젝트 루트 기준)
-        self.data_dir = Path(settings.get_absolute_data_dir())
+        self.data_dir = Path(settings.get_absolute_data_dir)
         self.api_keys_file = self.data_dir / "api_keys.json"
         self.rate_limits_file = self.data_dir / "rate_limits.json"
 
@@ -290,7 +290,11 @@ class APIKeyManager:
 
 
 # 전역 인스턴스
-api_key_manager = APIKeyManager()
+def get_api_key_manager():
+    """API Key Manager 인스턴스 반환 (lazy loading)"""
+    if not hasattr(get_api_key_manager, '_instance'):
+        get_api_key_manager._instance = APIKeyManager()
+    return get_api_key_manager._instance
 
 
 async def verify_jwt_token_with_db(jwt_token: str) -> Optional[Dict[str, Any]]:
