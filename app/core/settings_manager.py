@@ -143,14 +143,34 @@ class HAPASettings(BaseSettings):
     environment: str = Field("development", env="ENVIRONMENT")
     debug: bool = Field(False, env="DEBUG")
     
-    # 서브 설정들
-    database: DatabaseSettings = DatabaseSettings()
-    redis: RedisSettings = RedisSettings()
-    security: SecuritySettings = SecuritySettings()
-    server: ServerSettings = ServerSettings()
-    logging: LoggingSettings = LoggingSettings()
-    vllm: VLLMSettings = VLLMSettings()
-    monitoring: MonitoringSettings = MonitoringSettings()
+    # 서브 설정들을 property로 lazy loading
+    @property
+    def database(self) -> DatabaseSettings:
+        return DatabaseSettings()
+    
+    @property
+    def redis(self) -> RedisSettings:
+        return RedisSettings()
+    
+    @property
+    def security(self) -> SecuritySettings:
+        return SecuritySettings()
+    
+    @property
+    def server(self) -> ServerSettings:
+        return ServerSettings()
+    
+    @property
+    def logging(self) -> LoggingSettings:
+        return LoggingSettings()
+    
+    @property
+    def vllm(self) -> VLLMSettings:
+        return VLLMSettings()
+    
+    @property
+    def monitoring(self) -> MonitoringSettings:
+        return MonitoringSettings()
     
     class Config:
         env_file = ".env"
