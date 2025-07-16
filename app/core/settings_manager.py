@@ -69,13 +69,15 @@ class SecuritySettings(BaseSettings):
     ssl_cert_path: Optional[str] = Field(None, env="SSL_CERT_PATH")
     ssl_key_path: Optional[str] = Field(None, env="SSL_KEY_PATH")
     
-    @validator("allowed_origins", pre=True)
+    @field_validator("allowed_origins", mode='before')
+    @classmethod
     def parse_allowed_origins(cls, v):
         if isinstance(v, str):
             return [origin.strip() for origin in v.split(",")]
         return v
-    
-    @validator("allowed_hosts", pre=True)
+
+    @field_validator("allowed_hosts", mode='before')
+    @classmethod
     def parse_allowed_hosts(cls, v):
         if isinstance(v, str):
             return [host.strip() for host in v.split(",")]
