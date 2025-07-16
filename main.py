@@ -174,7 +174,8 @@ def create_application() -> FastAPI:
             "status": "healthy",
             "timestamp": time.time(),
             "service": "HAPA Backend API",
-            "version": "1.0.0"
+            "version": "1.0.0",
+            "version check":"ok"
         }
 
     # 상세 health 체크
