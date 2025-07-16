@@ -171,7 +171,7 @@ def create_application() -> FastAPI:
     async def health_check():
         """간단한 헬스 체크 - 인증 불필요"""
         return {
-            "status": "healthyssssssss",
+            "status": "healthyddddd",
             "timestamp": time.time(),
             "service": "HAPA Backend API",
             "version": "1.0.0",
