@@ -8,7 +8,9 @@ import json
 import logging
 from typing import Any, Dict, List, Optional, Union
 from pathlib import Path
-from pydantic import BaseSettings, Field, validator
+from pydantic import Field
+from pydantic_settings import BaseSettings
+from pydantic import field_validator
 from functools import lru_cache
 
 
