@@ -360,6 +360,8 @@ class Settings(BaseSettings):
         "env_file": [".env.production", ".env"],
         "env_file_encoding": "utf-8",
         "case_sensitive": True,
+        "extra": "ignore"  # 🆕 추가: 정의되지 않은 필드 무시
+
     }
 
     def get_cors_origins(self) -> List[str]:
