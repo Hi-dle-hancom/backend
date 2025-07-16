@@ -248,15 +248,25 @@ class Settings(BaseSettings):
 
     @property
     def get_absolute_data_dir(self) -> str:
-        """프로젝트 루트 기준 절대 데이터 경로 반환"""
+        """환경별 데이터 경로 반환 (Docker vs 호스트)"""
         import os
         from pathlib import Path
         
-        # 현재 파일 기준으로 프로젝트 루트 찾기
-        current_file = Path(__file__)
-        project_root = current_file.parent.parent.parent.parent  # Backend/app/core/config.py -> project/
+        # Docker 환경 감지 (여러 방법으로 확인)
+        is_docker = (
+            os.path.exists('/.dockerenv') or  # Docker 컨테이너 내부 파일
+            os.environ.get('DOCKER_ENV') == 'true' or  # 환경 변수
+            '/app' in str(Path.cwd())  # 작업 디렉토리가 /app으로 시작하는지 확인
+        )
         
-        return str(project_root / self.DATA_DIR)
+        if is_docker:
+            # Docker 환경: 컨테이너 내부 경로 사용
+            return "/app/data"
+        else:
+            # 호스트 환경: 프로젝트 루트 기준 절대 경로
+            current_file = Path(__file__)
+            project_root = current_file.parent.parent.parent.parent  # Backend/app/core/config.py -> project/
+            return str(project_root / self.DATA_DIR)
 
     # 🆕 환경별 로깅 설정 메서드들
     def should_log_performance(self) -> bool:
@@ -360,7 +370,7 @@ class Settings(BaseSettings):
         "env_file": [".env.production", ".env"],
         "env_file_encoding": "utf-8",
         "case_sensitive": True,
-        "extra": "ignore"  # 🆕 추가: 정의되지 않은 필드 무시
+        "extra": "ignore"  # 🆕 추가: 정의되지 않은 필드 무시 
     }
 
     def get_cors_origins(self) -> List[str]:

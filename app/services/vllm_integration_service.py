@@ -427,7 +427,7 @@ Python 코드:
             
             logger.info(f"개인화된 프롬프트 적용됨: skill_level={user_preferences.get('skill_level', 'unknown')}")
             return personalized_prompt
-            else:
+        else:
             logger.debug("개인화 정보 없음, 기본 프롬프트 사용")
             return base_prompt
 
@@ -471,7 +471,7 @@ Python 코드:
             temperature = min(base_temperature * 1.3, 0.5)
             max_tokens = int(base_max_tokens * 1.5)
             top_p = min(base_top_p * 1.1, 0.9)
-            else:  # complex
+        else:  # complex
             temperature = min(base_temperature * 1.6, 0.7)
             max_tokens = int(base_max_tokens * 2.0)
             top_p = min(base_top_p * 1.2, 0.95)

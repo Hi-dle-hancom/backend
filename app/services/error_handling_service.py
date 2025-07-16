@@ -747,8 +747,7 @@ class ErrorHandlingService:
             os.makedirs(os.path.dirname(log_file), exist_ok=True)
 
             with open(log_file, "a", encoding="utf-8") as f:
-                log_entry = f"[{message['timestamp']}] {severity.value.upper(
-                )} - {incident_id} - {message['error_code']} - {message['endpoint']}\n"
+                log_entry = f"[{message['timestamp']}] {severity.value.upper()} - {incident_id} - {message['error_code']} - {message['endpoint']}\n"
                 f.write(log_entry)
 
         except Exception as e:
