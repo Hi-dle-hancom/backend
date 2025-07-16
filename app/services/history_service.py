@@ -1,3 +1,5 @@
+import asyncio
+import asyncpg
 import json
 import logging
 import os
@@ -23,281 +25,402 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 
-class HistoryService:
-    """히스토리 관리 서비스"""
+class DatabaseHistoryService:
+    """PostgreSQL DB 기반 히스토리 관리 서비스"""
 
-    def __init__(self, data_dir: str = None):
-        # 통일된 데이터 경로 사용
-        if data_dir is None:
-            data_dir = f"{settings.get_absolute_data_dir}/history"
-        self.data_dir = data_dir
-        self.sessions_file = os.path.join(data_dir, "sessions.json")
-        self.entries_file = os.path.join(data_dir, "entries.json")
-        self._ensure_data_directory()
+    def __init__(self):
+        self.db_url = os.getenv("DB_MODULE_URL", "postgresql://postgres:password@localhost:5432/hapa_db")
+        self.pool: Optional[asyncpg.Pool] = None
 
-    def _ensure_data_directory(self):
-        """데이터 디렉토리 확인 및 생성"""
-        os.makedirs(self.data_dir, exist_ok=True)
+    async def _get_pool(self) -> asyncpg.Pool:
+        """데이터베이스 연결 풀 획득"""
+        if self.pool is None:
+            try:
+                self.pool = await asyncpg.create_pool(
+                    self.db_url,
+                    min_size=2,
+                    max_size=10,
+                    timeout=30,
+                    command_timeout=60
+                )
+                logger.info("✅ PostgreSQL 히스토리 서비스 연결 완료")
+            except Exception as e:
+                logger.error(f"❌ PostgreSQL 연결 실패: {e}")
+                raise
+        return self.pool
 
-        for file_path in [self.sessions_file, self.entries_file]:
-            if not os.path.exists(file_path):
-                with open(file_path, "w", encoding="utf-8") as f:
-                    json.dump([], f, ensure_ascii=False, indent=2)
-
-    def create_session(
-            self,
-            request: SessionCreateRequest) -> ConversationSession:
-        """새 세션 생성"""
+    async def create_session(
+            self, request: SessionCreateRequest, user_id: int) -> ConversationSession:
+        """새 세션 생성 (사용자별)"""
         session_id = f"session_{uuid.uuid4().hex[:8]}"
         current_time = datetime.now()
 
-        session = ConversationSession(
-            session_id=session_id,
-            session_title=request.session_title or f"Session {session_id[:8]}",
-            status=ConversationStatus.ACTIVE,
-            primary_language=request.primary_language,
-            tags=request.tags or [],
-            project_name=request.project_name,
-            created_at=current_time,
-            updated_at=current_time,
-            last_activity=current_time,
-        )
+        pool = await self._get_pool()
+        async with pool.acquire() as connection:
+            try:
+                # 세션 DB 저장
+                query = """
+                    INSERT INTO conversation_sessions 
+                    (session_id, user_id, session_title, status, primary_language, tags, project_name,
+                     created_at, updated_at, last_activity)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                    RETURNING *
+                """
+                
+                session_title = request.session_title or f"Session {session_id[:8]}"
+                tags_array = request.tags or []
+                
+                record = await connection.fetchrow(
+                    query,
+                    session_id,
+                    user_id,
+                    session_title,
+                    ConversationStatus.ACTIVE.value,
+                    request.primary_language or "python",
+                    tags_array,
+                    request.project_name,
+                    current_time,
+                    current_time,
+                    current_time
+                )
 
-        # 세션 저장
-        sessions = self._load_sessions()
-        sessions.append(session.dict())
-        self._save_sessions(sessions)
+                session = ConversationSession(
+                    session_id=record['session_id'],
+                    session_title=record['session_title'],
+                    status=ConversationStatus(record['status']),
+                    primary_language=record['primary_language'],
+                    tags=record['tags'] or [],
+                    project_name=record['project_name'],
+                    created_at=record['created_at'],
+                    updated_at=record['updated_at'],
+                    last_activity=record['last_activity'],
+                )
 
-        logger.info(f"새 세션 생성: {session_id}")
-        return session
+                logger.info(f"✅ 새 세션 생성: {session_id} (사용자: {user_id})")
+                return session
 
-    def add_entry(self, request: HistoryCreateRequest) -> HistoryResponse:
-        """히스토리 엔트리 추가"""
+            except Exception as e:
+                logger.error(f"❌ 세션 생성 실패: {e}")
+                raise
+
+    async def add_entry(self, request: HistoryCreateRequest, user_id: int) -> HistoryResponse:
+        """히스토리 엔트리 추가 (사용자별)"""
         entry_id = f"entry_{uuid.uuid4().hex[:8]}"
         current_time = datetime.now()
 
-        entry = ConversationEntry(
-            entry_id=entry_id,
-            session_id=request.session_id,
-            conversation_type=request.conversation_type,
-            content=request.content,
-            language=request.language,
-            code_snippet=request.code_snippet,
-            file_name=request.file_name,
-            line_number=request.line_number,
-            response_time=request.response_time,
-            confidence_score=request.confidence_score,
-            timestamp=current_time,
-        )
+        pool = await self._get_pool()
+        async with pool.acquire() as connection:
+            async with connection.transaction():
+                try:
+                    # 세션 존재 및 소유권 확인
+                    session_check = await connection.fetchrow(
+                        "SELECT id FROM conversation_sessions WHERE session_id = $1 AND user_id = $2",
+                        request.session_id, user_id
+                    )
+                    
+                    if not session_check:
+                        raise ValueError(f"세션을 찾을 수 없거나 접근 권한이 없습니다: {request.session_id}")
 
-        # 엔트리 저장
-        entries = self._load_entries()
-        entries.append(entry.dict())
-        self._save_entries(entries)
+                    # 엔트리 저장
+                    entry_query = """
+                        INSERT INTO conversation_entries 
+                        (entry_id, session_id, user_id, conversation_type, content, language,
+                         code_snippet, file_name, line_number, response_time, confidence_score, created_at)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                    """
+                    
+                    await connection.execute(
+                        entry_query,
+                        entry_id,
+                        request.session_id,
+                        user_id,
+                        request.conversation_type.value,
+                        request.content,
+                        request.language,
+                        request.code_snippet,
+                        request.file_name,
+                        request.line_number,
+                        request.response_time,
+                        request.confidence_score,
+                        current_time
+                    )
 
-        # 세션 통계 업데이트
-        self._update_session_stats(request.session_id)
+                    # 세션 통계 업데이트
+                    await self._update_session_stats(connection, request.session_id, user_id)
 
-        return HistoryResponse(
-            success=True,
-            entry_id=entry_id,
-            session_id=request.session_id,
-            message="히스토리 엔트리가 추가되었습니다.",
-            timestamp=current_time,
-        )
+                    logger.info(f"✅ 히스토리 엔트리 추가: {entry_id} (사용자: {user_id})")
+                    
+                    return HistoryResponse(
+                        success=True,
+                        entry_id=entry_id,
+                        session_id=request.session_id,
+                        message="히스토리 엔트리가 추가되었습니다.",
+                        timestamp=current_time,
+                    )
 
-    def get_session_history(
-        self, session_id: str, limit: int = 50
+                except Exception as e:
+                    logger.error(f"❌ 히스토리 엔트리 추가 실패: {e}")
+                    raise
+
+    async def get_session_history(
+        self, session_id: str, limit: int = 50, user_id: int = None
     ) -> List[Dict[str, Any]]:
-        """세션별 히스토리 조회"""
-        entries = self._load_entries()
-        session_entries = [
-            e for e in entries if e.get("session_id") == session_id]
-        session_entries.sort(key=lambda x: x.get("timestamp", ""))
-        return session_entries[-limit:]
+        """세션별 히스토리 조회 (사용자별)"""
+        pool = await self._get_pool()
+        async with pool.acquire() as connection:
+            try:
+                query = """
+                    SELECT * FROM conversation_entries 
+                    WHERE session_id = $1 AND user_id = $2
+                    ORDER BY created_at DESC 
+                    LIMIT $3
+                """
+                
+                records = await connection.fetch(query, session_id, user_id, limit)
+                
+                result = []
+                for record in records:
+                    entry_dict = dict(record)
+                    # datetime 객체를 ISO 문자열로 변환
+                    if entry_dict.get('created_at'):
+                        entry_dict['timestamp'] = entry_dict['created_at'].isoformat()
+                    result.append(entry_dict)
+                
+                logger.info(f"✅ 세션 히스토리 조회: {len(result)}개 (세션: {session_id}, 사용자: {user_id})")
+                return result
 
-    def get_recent_sessions(self, limit: int = 20) -> List[Dict[str, Any]]:
-        """최근 세션 조회"""
-        sessions = self._load_sessions()
-        sessions.sort(key=lambda x: x.get("last_activity", ""), reverse=True)
-        return sessions[:limit]
+            except Exception as e:
+                logger.error(f"❌ 세션 히스토리 조회 실패: {e}")
+                return []
 
-    def search_history(
-            self, request: HistorySearchRequest) -> List[Dict[str, Any]]:
-        """히스토리 검색"""
-        entries = self._load_entries()
+    async def get_recent_sessions(self, limit: int = 20, user_id: int = None) -> List[Dict[str, Any]]:
+        """최근 세션 조회 (사용자별)"""
+        pool = await self._get_pool()
+        async with pool.acquire() as connection:
+            try:
+                query = """
+                    SELECT * FROM conversation_sessions 
+                    WHERE user_id = $1
+                    ORDER BY last_activity DESC 
+                    LIMIT $2
+                """
+                
+                records = await connection.fetch(query, user_id, limit)
+                
+                result = []
+                for record in records:
+                    session_dict = dict(record)
+                    # datetime 객체를 ISO 문자열로 변환
+                    for field in ['created_at', 'updated_at', 'last_activity']:
+                        if session_dict.get(field):
+                            session_dict[field] = session_dict[field].isoformat()
+                    result.append(session_dict)
+                
+                logger.info(f"✅ 최근 세션 조회: {len(result)}개 (사용자: {user_id})")
+                return result
 
-        # 필터 적용
-        filtered_entries = []
-        for entry in entries:
-            # 텍스트 검색
-            if request.query.lower() not in entry.get("content", "").lower():
-                continue
+            except Exception as e:
+                logger.error(f"❌ 최근 세션 조회 실패: {e}")
+                return []
 
-            # 세션 ID 필터
-            if (
-                request.session_ids
-                and entry.get("session_id") not in request.session_ids
-            ):
-                continue
+    async def search_history(
+            self, request: HistorySearchRequest, user_id: int = None) -> List[Dict[str, Any]]:
+        """히스토리 검색 (사용자별)"""
+        pool = await self._get_pool()
+        async with pool.acquire() as connection:
+            try:
+                # 기본 쿼리
+                query = """
+                    SELECT e.*, s.session_title 
+                    FROM conversation_entries e 
+                    JOIN conversation_sessions s ON e.session_id = s.session_id
+                    WHERE e.user_id = $1 AND e.content ILIKE $2
+                """
+                params = [user_id, f"%{request.query}%"]
+                param_count = 2
 
-            # 언어 필터
-            if request.language and entry.get("language") != request.language:
-                continue
+                # 추가 필터 조건들
+                if request.session_ids:
+                    param_count += 1
+                    query += f" AND e.session_id = ANY(${param_count})"
+                    params.append(request.session_ids)
 
-            # 대화 유형 필터
-            if (request.conversation_type and entry.get(
-                    "conversation_type") != request.conversation_type.value):
-                continue
+                if request.language:
+                    param_count += 1
+                    query += f" AND e.language = ${param_count}"
+                    params.append(request.language)
 
-            # 날짜 필터
-            entry_date = datetime.fromisoformat(
-                entry.get("timestamp", "").replace("Z", "+00:00")
-            )
-            if request.date_from and entry_date < request.date_from:
-                continue
-            if request.date_to and entry_date > request.date_to:
-                continue
+                if request.conversation_type:
+                    param_count += 1
+                    query += f" AND e.conversation_type = ${param_count}"
+                    params.append(request.conversation_type.value)
 
-            filtered_entries.append(entry)
+                if request.date_from:
+                    param_count += 1
+                    query += f" AND e.created_at >= ${param_count}"
+                    params.append(request.date_from)
 
-        # 최신순 정렬 및 제한
-        filtered_entries.sort(
-            key=lambda x: x.get(
-                "timestamp", ""), reverse=True)
-        return filtered_entries[: request.limit]
+                if request.date_to:
+                    param_count += 1
+                    query += f" AND e.created_at <= ${param_count}"
+                    params.append(request.date_to)
 
-    def get_stats(self) -> HistoryStats:
-        """히스토리 통계 조회"""
-        sessions = self._load_sessions()
-        entries = self._load_entries()
+                query += f" ORDER BY e.created_at DESC LIMIT ${param_count + 1}"
+                params.append(request.limit)
 
-        # 기본 통계
-        total_sessions = len(sessions)
-        active_sessions = sum(
-            1 for s in sessions if s.get("status") == "active")
-        total_entries = len(entries)
-        total_questions = sum(
-            1 for e in entries if e.get("conversation_type") == "question"
-        )
-        total_answers = sum(
-            1 for e in entries if e.get("conversation_type") == "answer"
-        )
+                records = await connection.fetch(query, *params)
+                
+                result = []
+                for record in records:
+                    entry_dict = dict(record)
+                    if entry_dict.get('created_at'):
+                        entry_dict['timestamp'] = entry_dict['created_at'].isoformat()
+                    result.append(entry_dict)
+                
+                logger.info(f"✅ 히스토리 검색: {len(result)}개 결과 (사용자: {user_id})")
+                return result
 
-        # 언어별 분포
-        language_dist = {}
-        for session in sessions:
-            lang = session.get("primary_language", "unknown")
-            language_dist[lang] = language_dist.get(lang, 0) + 1
+            except Exception as e:
+                logger.error(f"❌ 히스토리 검색 실패: {e}")
+                return []
 
-        # 날짜별 통계
-        today = datetime.now().date()
-        week_ago = today - timedelta(days=7)
-
-        sessions_today = sum(
-            1
-            for s in sessions
-            if datetime.fromisoformat(s.get("created_at", "")).date() == today
-        )
-        sessions_this_week = sum(
-            1
-            for s in sessions
-            if datetime.fromisoformat(s.get("created_at", "")).date() >= week_ago
-        )
-
-        # 평균 세션 길이
-        avg_length = total_entries / total_sessions if total_sessions > 0 else 0
-
-        return HistoryStats(
-            total_sessions=total_sessions,
-            active_sessions=active_sessions,
-            total_entries=total_entries,
-            total_questions=total_questions,
-            total_answers=total_answers,
-            language_distribution=language_dist,
-            sessions_today=sessions_today,
-            sessions_this_week=sessions_this_week,
-            average_session_length=round(avg_length, 2),
-        )
-
-    def delete_session(self, session_id: str) -> bool:
-        """세션 삭제"""
-        sessions = self._load_sessions()
-        entries = self._load_entries()
-
-        # 세션 삭제
-        original_count = len(sessions)
-        sessions = [s for s in sessions if s.get("session_id") != session_id]
-
-        if len(sessions) == original_count:
-            return False
-
-        # 관련 엔트리 삭제
-        entries = [e for e in entries if e.get("session_id") != session_id]
-
-        self._save_sessions(sessions)
-        self._save_entries(entries)
-
-        logger.info(f"세션 삭제 완료: {session_id}")
-        return True
-
-    def _load_sessions(self) -> List[Dict[str, Any]]:
-        """세션 데이터 로드"""
-        try:
-            with open(self.sessions_file, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except BaseException:
-            return []
-
-    def _save_sessions(self, sessions: List[Dict[str, Any]]):
-        """세션 데이터 저장"""
-        with open(self.sessions_file, "w", encoding="utf-8") as f:
-            json.dump(sessions, f, ensure_ascii=False, indent=2, default=str)
-
-    def _load_entries(self) -> List[Dict[str, Any]]:
-        """엔트리 데이터 로드"""
-        try:
-            with open(self.entries_file, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except BaseException:
-            return []
-
-    def _save_entries(self, entries: List[Dict[str, Any]]):
-        """엔트리 데이터 저장"""
-        with open(self.entries_file, "w", encoding="utf-8") as f:
-            json.dump(entries, f, ensure_ascii=False, indent=2, default=str)
-
-    def _update_session_stats(self, session_id: str):
-        """세션 통계 업데이트"""
-        sessions = self._load_sessions()
-        entries = self._load_entries()
-
-        for session in sessions:
-            if session.get("session_id") == session_id:
-                # 세션 엔트리 통계 계산
-                session_entries = [
-                    e for e in entries if e.get("session_id") == session_id
-                ]
-                session["total_entries"] = len(session_entries)
-                session["question_count"] = sum(
-                    1
-                    for e in session_entries
-                    if e.get("conversation_type") == "question"
+    async def get_stats(self, user_id: int = None) -> HistoryStats:
+        """히스토리 통계 조회 (사용자별)"""
+        pool = await self._get_pool()
+        async with pool.acquire() as connection:
+            try:
+                # 기본 통계
+                session_stats = await connection.fetchrow(
+                    "SELECT COUNT(*) as total, COUNT(*) FILTER (WHERE status = 'active') as active FROM conversation_sessions WHERE user_id = $1",
+                    user_id
                 )
-                session["answer_count"] = sum(
-                    1 for e in session_entries if e.get("conversation_type") == "answer")
-                session["updated_at"] = datetime.now().isoformat()
-                session["last_activity"] = datetime.now().isoformat()
-                break
+                
+                entry_stats = await connection.fetchrow(
+                    "SELECT COUNT(*) as total, COUNT(*) FILTER (WHERE conversation_type = 'question') as questions, COUNT(*) FILTER (WHERE conversation_type = 'answer') as answers FROM conversation_entries WHERE user_id = $1",
+                    user_id
+                )
 
-        self._save_sessions(sessions)
+                # 언어별 분포
+                lang_records = await connection.fetch(
+                    "SELECT primary_language, COUNT(*) as count FROM conversation_sessions WHERE user_id = $1 GROUP BY primary_language",
+                    user_id
+                )
+                language_dist = {record['primary_language']: record['count'] for record in lang_records}
+
+                # 날짜별 통계
+                today = datetime.now().date()
+                week_ago = today - timedelta(days=7)
+
+                daily_stats = await connection.fetchrow(
+                    "SELECT COUNT(*) as today, COUNT(*) FILTER (WHERE created_at::date >= $2) as week FROM conversation_sessions WHERE user_id = $1 AND created_at::date = $2",
+                    user_id, today
+                )
+
+                weekly_stats = await connection.fetchval(
+                    "SELECT COUNT(*) FROM conversation_sessions WHERE user_id = $1 AND created_at::date >= $2",
+                    user_id, week_ago
+                )
+
+                # 평균 세션 길이
+                total_sessions = session_stats['total']
+                total_entries = entry_stats['total']
+                avg_length = total_entries / total_sessions if total_sessions > 0 else 0
+
+                return HistoryStats(
+                    total_sessions=total_sessions,
+                    active_sessions=session_stats['active'],
+                    total_entries=total_entries,
+                    total_questions=entry_stats['questions'],
+                    total_answers=entry_stats['answers'],
+                    language_distribution=language_dist,
+                    sessions_today=daily_stats['today'] if daily_stats else 0,
+                    sessions_this_week=weekly_stats if weekly_stats else 0,
+                    average_session_length=round(avg_length, 2),
+                )
+
+            except Exception as e:
+                logger.error(f"❌ 히스토리 통계 조회 실패: {e}")
+                return HistoryStats()
+
+    async def delete_session(self, session_id: str, user_id: int = None) -> bool:
+        """세션 삭제 (사용자별)"""
+        pool = await self._get_pool()
+        async with pool.acquire() as connection:
+            async with connection.transaction():
+                try:
+                    # 세션 소유권 확인 후 삭제
+                    result = await connection.execute(
+                        "DELETE FROM conversation_sessions WHERE session_id = $1 AND user_id = $2",
+                        session_id, user_id
+                    )
+                    
+                    deleted = result.split()[-1] == "1"  # "DELETE 1" -> True
+                    
+                    if deleted:
+                        logger.info(f"✅ 세션 삭제: {session_id} (사용자: {user_id})")
+                    else:
+                        logger.warning(f"⚠️ 세션 삭제 실패: {session_id} (사용자: {user_id})")
+                    
+                    return deleted
+
+                except Exception as e:
+                    logger.error(f"❌ 세션 삭제 실패: {e}")
+                    return False
+
+    async def get_health_stats(self) -> Dict[str, Any]:
+        """헬스체크용 익명 통계"""
+        pool = await self._get_pool()
+        async with pool.acquire() as connection:
+            try:
+                total_sessions = await connection.fetchval("SELECT COUNT(*) FROM conversation_sessions")
+                total_entries = await connection.fetchval("SELECT COUNT(*) FROM conversation_entries")
+                
+                return {
+                    "total_sessions": total_sessions,
+                    "total_entries": total_entries,
+                    "service_status": "healthy"
+                }
+            except Exception as e:
+                logger.error(f"❌ 헬스체크 통계 조회 실패: {e}")
+                return {"service_status": "unhealthy", "error": str(e)}
+
+    async def _update_session_stats(self, connection, session_id: str, user_id: int):
+        """세션 통계 업데이트"""
+        try:
+            stats = await connection.fetchrow(
+                """
+                SELECT 
+                    COUNT(*) as total_entries,
+                    COUNT(*) FILTER (WHERE conversation_type = 'question') as question_count,
+                    COUNT(*) FILTER (WHERE conversation_type = 'answer') as answer_count
+                FROM conversation_entries 
+                WHERE session_id = $1 AND user_id = $2
+                """,
+                session_id, user_id
+            )
+            
+            await connection.execute(
+                """
+                UPDATE conversation_sessions 
+                SET total_entries = $1, question_count = $2, answer_count = $3, 
+                    updated_at = $4, last_activity = $4
+                WHERE session_id = $5 AND user_id = $6
+                """,
+                stats['total_entries'],
+                stats['question_count'], 
+                stats['answer_count'],
+                datetime.now(),
+                session_id,
+                user_id
+            )
+        except Exception as e:
+            logger.error(f"❌ 세션 통계 업데이트 실패: {e}")
 
 
 class SettingsService:
-    """설정 관리 서비스"""
+    """설정 관리 서비스 (기존 JSON 파일 방식 유지)"""
 
     def __init__(self, data_dir: str = None):
-        # 통일된 데이터 경로 사용
         if data_dir is None:
             data_dir = f"{settings.get_absolute_data_dir}/settings"
         self.data_dir = data_dir
@@ -322,26 +445,52 @@ class SettingsService:
             with open(self.settings_file, "w", encoding="utf-8") as f:
                 json.dump(default_settings, f, ensure_ascii=False, indent=2)
 
-    def get_settings(self) -> Dict[str, Any]:
-        """설정 조회"""
+    def get_user_settings(self, user_id: int = None) -> Dict[str, Any]:
+        """사용자별 설정 조회"""
         try:
             with open(self.settings_file, "r", encoding="utf-8") as f:
-                return json.load(f)
+                settings = json.load(f)
+            # 사용자별 설정 지원하려면 DB 연동 필요 (향후 개선)
+            return settings
         except BaseException:
             return {}
 
-    def update_settings(self, settings: Dict[str, Any]) -> Dict[str, Any]:
-        """설정 업데이트"""
-        current_settings = self.get_settings()
-        current_settings.update(settings)
-        current_settings["updated_at"] = datetime.now().isoformat()
+    def update_user_settings(self, settings: Dict[str, Any], user_id: int = None) -> bool:
+        """사용자별 설정 업데이트"""
+        try:
+            current_settings = self.get_user_settings(user_id)
+            current_settings.update(settings)
+            current_settings["updated_at"] = datetime.now().isoformat()
 
-        with open(self.settings_file, "w", encoding="utf-8") as f:
-            json.dump(current_settings, f, ensure_ascii=False, indent=2)
+            with open(self.settings_file, "w", encoding="utf-8") as f:
+                json.dump(current_settings, f, ensure_ascii=False, indent=2)
+            return True
+        except Exception as e:
+            logger.error(f"❌ 설정 업데이트 실패: {e}")
+            return False
 
-        return current_settings
+    def reset_user_settings(self, user_id: int = None) -> bool:
+        """사용자별 설정 초기화"""
+        try:
+            default_settings = {
+                "ai_model": "gpt-3.5-turbo",
+                "response_length": "medium",
+                "default_language": "python",
+                "auto_save": True,
+                "dark_mode": False,
+                "code_completion": True,
+                "max_history": 100,
+                "notification_enabled": True,
+                "reset_at": datetime.now().isoformat(),
+            }
+            with open(self.settings_file, "w", encoding="utf-8") as f:
+                json.dump(default_settings, f, ensure_ascii=False, indent=2)
+            return True
+        except Exception as e:
+            logger.error(f"❌ 설정 초기화 실패: {e}")
+            return False
 
 
-# 전역 서비스 인스턴스
-history_service = HistoryService()
+# 전역 서비스 인스턴스 (PostgreSQL 기반)
+history_service = DatabaseHistoryService()
 settings_service = SettingsService()

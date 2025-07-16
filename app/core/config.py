@@ -103,16 +103,20 @@ class Settings(BaseSettings):
     METRICS_PORT: int = 9090
     HEALTH_CHECK_INTERVAL: int = 30
 
-    # 개발 전용 설정
-    ENABLE_DEMO_API_KEY: bool = True
-    DEMO_USER_ID: str = "demo_user"
-    DEMO_API_KEY: str = "hapa_demo_20241228_secure_key_for_testing"
-    DEMO_API_KEY_PERMISSIONS: List[str] = [
-        "code_generation",
-        "code_completion",
-        "feedback",
-        "history",
-    ]
+    # ✅ 완전 개선: 하드코딩 제거된 동적 사용자 인증 시스템
+    ENABLE_DEMO_API_KEY: bool = False  # 데모 API 키 완전 비활성화
+    
+    # 동적 DB 기반 사용자 인증 설정 (하드코딩 없음)
+    DYNAMIC_USER_AUTH_ENABLED: bool = Field(
+        default=True,
+        description="동적 DB 기반 사용자 인증 활성화"
+    )
+    
+    # 테스트 모드 설정 (선택적, 하드코딩 없음)
+    TEST_MODE_ENABLED: bool = Field(
+        default=False,
+        description="테스트 모드 활성화 (실제 운영에서는 false)"
+    )
 
     # 보안 헤더 설정
     ENABLE_SECURITY_HEADERS: bool = True

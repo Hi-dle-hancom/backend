@@ -40,3 +40,9 @@ pyasn1==0.4.8
 
 # Redis 클라이언트
 redis==5.0.1
+
+# HTTP 클라이언트 (vLLM 통합에 필요)
+aiohttp==3.9.0
+
+# PostgreSQL 비동기 클라이언트
+asyncpg==0.29.0

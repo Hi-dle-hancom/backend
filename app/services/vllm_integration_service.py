@@ -1,1250 +1,673 @@
 """
-vLLM 멀티 LoRA 서버 통합 서비스
-- 4가지 모델 타입별 코드 생성
-- 실시간 스트리밍 응답 처리
-- 한국어/영어 자동 번역 파이프라인 지원
-- 사용자 선택 옵션 최적화
-- 🆕 청크 버퍼링 및 배치 처리 최적화
+vLLM 멀티 LoRA 서버 통합 서비스 (적응형 시스템 업그레이드)
+- 실시간 스트리밍 응답
+- 적응형 청크 버퍼 시스템
+- 지능적 Stop Token 감지
+- 요청 복잡도별 동적 최적화
 """
 
 import asyncio
 import json
 import re
 import time
-from datetime import datetime
-from enum import Enum
-from typing import Any, AsyncGenerator, Dict, List, Optional
+import ast
+from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 import aiohttp
 
 from app.core.config import settings
 from app.core.structured_logger import StructuredLogger
-from app.schemas.code_generation import (
-    CodeGenerationRequest,
-    CodeGenerationResponse,
-    ModelType,
-)
-
-# 🆕 AI 성능 메트릭 import 추가
-from app.services.performance_profiler import ai_performance_metrics
+from app.schemas.code_generation import CodeGenerationRequest, CodeGenerationResponse
+from .adaptive_chunk_buffer import AdaptiveChunkBuffer, IntelligentStopTokenDetector, create_adaptive_system
 
 logger = StructuredLogger("vllm_integration")
 
 
-class VLLMModelType(str, Enum):
-    """vLLM 서버에서 지원하는 모델 타입"""
-
-    AUTOCOMPLETE = "autocomplete"  # 코드 자동완성 (번역 없음)
-    PROMPT = "prompt"  # 일반 코드 생성 (전체 번역)
-    COMMENT = "comment"  # 주석/docstring 생성 (주석만 번역)
-    ERROR_FIX = "error_fix"  # 버그 수정 (전체 번역)
-
-
-class ChunkBuffer:
-    """청크 버퍼링 클래스 - 의미있는 단위로 청크 그룹화 및 후처리 (극한 성능 최적화)"""
+# 🛡️ 코드 품질 검증 시스템 - 깨진 코드 방지
+class CodeQualityValidator:
+    """Python 코드 품질 검증 시스템"""
     
-    def __init__(self, buffer_size: int = 80, buffer_timeout: float = 0.1, request_context: str = ""):
-        # 🚀 극한 성능 최적화 설정 (99.9% 청크 감소 목표: 30-50개 청크)
-        self.buffer_size = buffer_size  # 극한 감소: 500 → 80자
-        self.buffer_timeout = buffer_timeout  # 극한 감소: 2.0 → 0.1초
-        self.min_chunk_size = 200  # 극한 증가: 120 → 200자 (더 큰 청크 강제)
-        self.max_chunk_size = 800  # 감소: 1200 → 800자
-        self.optimal_chunk_size = 400  # 증가: 300 → 400자
-        self.buffer = ""
-        self.last_flush_time = time.time()
+    def __init__(self):
+        self.validation_enabled = True
+        self.strict_mode = True  # 엄격한 검증 모드
         
-        # 📝 요청 맥락 저장 (정확한 코드 생성용)
-        self.request_context = request_context.lower() if request_context else ""
-        
-        # 성능 모니터링 변수들
-        self.total_chunks_processed = 0
-        self.total_bytes_processed = 0
-        self.small_chunks_count = 0  # 200자 미만 청크 개수
-        self.large_chunks_count = 0  # 800자 초과 청크 개수
-        self.optimal_chunks_count = 0  # 200-400자 청크 개수
-        
-        # 🔥 극도로 엄격한 청크 생성 정책
-        self.force_meaningful_boundaries = True
-        self.strict_size_enforcement = True
-        self.ultra_strict_mode = True  # 새로운 극한 모드
-        
-        # 🔥 극도로 엄격한 의미 구분자 패턴 (오직 완전한 코드 블록만)
-        self.meaningful_delimiters = [
-            # 최고 우선순위: 완전한 함수/클래스 블록만 (최소 10줄 이상)
-            r'def\s+\w+\([^)]*\):\s*\n(?:\s{4}.*\n){10,}',     # 함수 정의 (10줄 이상)
-            r'class\s+\w+[^:]*:\s*\n(?:\s{4}.*\n){10,}',       # 클래스 정의 (10줄 이상)
-            r'async\s+def\s+\w+\([^)]*\):\s*\n(?:\s{4}.*\n){8,}', # async 함수 (8줄 이상)
+    def validate_code_chunk(self, code: str) -> Dict[str, Any]:
+        """코드 청크 품질 검증"""
+        if not self.validation_enabled or not code.strip():
+            return {"valid": True, "issues": [], "confidence": 1.0}
             
-            # 고우선순위: 완전한 제어 구조 (최소 8줄)
-            r'if\s+[^:]+:\s*\n(?:\s{4}.*\n){8,}(?:else:\s*\n(?:\s{4}.*\n)*)?', # if-else (8줄 이상)
-            r'for\s+[^:]+:\s*\n(?:\s{4}.*\n){6,}',            # for 루프 (6줄 이상)
-            r'while\s+[^:]+:\s*\n(?:\s{4}.*\n){6,}',          # while 루프 (6줄 이상)
-            r'try:\s*\n(?:\s{4}.*\n){4,}except[^:]*:\s*\n(?:\s{4}.*\n){4,}', # try-except (각 4줄 이상)
-            
-            # 중우선순위: 완전한 docstring이나 긴 주석 블록 (100자 이상)
-            r'"""\s*\n[^"]{100,}\n\s*"""',                    # 긴 docstring (100자 이상)
-            r"'''\s*\n[^']{100,}\n\s*'''",                    # 긴 docstring (100자 이상)
-            r'\n\s*#[^\n]{100,}\n',                           # 긴 주석 (100자 이상)
-        ]
+        issues = []
+        confidence = 1.0
         
-        # 완전한 코드 요소 감지 패턴 (더 엄격하게)
-        self.complete_code_patterns = [
-            r'def\s+\w+\([^)]*\):\s*\n(?:\s{4}.*\n){8,}',     # 완전한 함수 (8줄 이상)
-            r'class\s+\w+[^:]*:\s*\n(?:\s{4}.*\n){8,}',       # 완전한 클래스 (8줄 이상)
-            r'if\s+[^:]+:\s*\n(?:\s{4}.*\n){4,}else:\s*\n(?:\s{4}.*\n)+', # 완전한 if-else
-            r'try:\s*\n(?:\s{4}.*\n)+except[^:]*:\s*\n(?:\s{4}.*\n)+', # 완전한 try-except
-        ]
-        
-        # 🎯 실제 vLLM stop token 패턴 (제거용)
-        self.special_token_patterns = [
-            r'<\|EOT\|>.*$',                                  # 최우선 스탑토큰 및 이후 내용
-            r'\n# --- Generation Complete ---.*$',            # vLLM 완료 마커 및 이후 내용
-            r'# --- Generation Complete ---.*$',              # vLLM 완료 마커 (줄바꿈 없음) 및 이후 내용
-            r'<｜fim▁begin｜>.*$',                           # FIM 시작 토큰 및 이후 내용
-            r'<｜fim▁hole｜>.*$',                            # FIM 홀 토큰 및 이후 내용
-            r'<｜fim▁end｜>.*$',                             # FIM 종료 토큰 및 이후 내용
-            r'<\|endoftext\|>.*$',                            # GPT 종료 토큰 및 이후 내용
+        # 🔍 1. 기본 구문 검증
+        syntax_issues = self._check_basic_syntax(code)
+        if syntax_issues:
+            issues.extend(syntax_issues)
+            confidence -= 0.3
             
-            # 백업용 일반적인 토큰들
-            r'<\|im_end\|>.*$',                               # ChatML 종료 토큰
-            r'<\|im_start\|>[^|]*\|>',                        # ChatML 시작 토큰
-            r'<\|assistant\|>',                               # assistant 토큰
-            r'<\|user\|>',                                    # user 토큰
-            r'<\|system\|>',                                  # system 토큰
-            r'<\|end[^>]*\|>',                                # 기타 end 토큰
-            r'<\|[^>]*\|>',                                   # 기타 특수 토큰
+        # 🔍 2. 괄호 균형 검증
+        balance_issues = self._check_bracket_balance(code)
+        if balance_issues:
+            issues.extend(balance_issues)
+            confidence -= 0.2
             
-            # 🛡️ HTML 태그 및 메타데이터 제거 강화
-            r'</td>[^>]*>?',                                  # HTML 테이블 태그
-            r'</?t[dr]>',                                     # HTML 테이블 관련 태그
-            r'</?\w+[^>]*>',                                  # 일반 HTML 태그
-            r'---\w*Generation\w*---?',                       # Generation 메타데이터
-            r'#[-]+\w*Generation\w*[-]*',                     # Generation 마커
-            r'#[-]+\w+[-]*#?',                               # 기타 메타데이터 마커
+        # 🔍 3. 문자열 균형 검증
+        quote_issues = self._check_quote_balance(code)
+        if quote_issues:
+            issues.extend(quote_issues)
+            confidence -= 0.2
             
-            r'\[INST\]|\[/INST\]',                            # 명령 토큰
-            r'<s>|</s>',                                      # 시작/종료 토큰
-            r'<unk>|<pad>|<eos>|<bos>',                       # 특수 토큰들
-            r'Assistant:|Human:|User:',                       # 역할 라벨
-        ]
-    
-    def add_chunk(self, chunk: str) -> Optional[str]:
-        """청크를 버퍼에 추가하고 필요시 플러시 - 극한 성능 최적화된 로직"""
-        
-        # 개발 환경에서만 상세 로그
-        if settings.should_log_debug():
-            print(f"🔍 [ChunkBuffer] 청크 입력: '{chunk[:30]}...' (길이: {len(chunk)})")
-        
-        # 1단계: 개별 청크에서 정확한 스탑 토큰 체크
-        detected_token = self._get_detected_end_token(chunk)
-        if detected_token:
-            if settings.should_log_performance():
-                print(f"🎯 정확한 stop token 감지: '{detected_token}' - 즉시 종료")
+        # 🔍 4. AST 파싱 시도 (완전성 검증)
+        ast_issues = self._check_ast_validity(code)
+        if ast_issues:
+            issues.extend(ast_issues)
+            confidence -= 0.3
             
-            # stop token 이전 부분만 추출하여 깨끗한 코드 생성
-            clean_chunk = self._extract_content_before_end_token(chunk)
-            if clean_chunk and clean_chunk.strip():
-                # 요청 맥락 고려한 코드 생성
-                final_clean = self._generate_appropriate_code(clean_chunk.strip())
-                self.buffer += final_clean
-                if settings.should_log_performance():
-                    print(f"✨ 요청에 맞는 코드 생성: {final_clean}")
-            
-            # 즉시 플러시하고 중단 신호 반환
-            final_content = self.flush()
-            return final_content if final_content.strip() else "[END_OF_GENERATION]"
-        
-        # 일반적인 특수 토큰 제거 (im_end 제외)
-        cleaned_chunk = self._clean_special_tokens(chunk)
-        
-        # 빈 내용이면 무시
-        if not cleaned_chunk.strip():
-            return None
-            
-        self.buffer += cleaned_chunk
-        current_time = time.time()
-        
-        # 2단계: 누적된 버퍼에서 조각난 스탑 토큰 체크
-        buffer_detected_token = self._get_detected_end_token(self.buffer)
-        if buffer_detected_token:
-            if settings.should_log_performance():
-                print(f"🎯 버퍼에서 stop token 감지: '{buffer_detected_token}' - 즉시 종료")
-            
-            # 누적된 버퍼에서 토큰 이전 부분만 추출하여 깨끗한 코드 생성
-            clean_buffer = self._extract_content_before_end_token(self.buffer)
-            if clean_buffer and clean_buffer.strip():
-                final_clean = self._generate_appropriate_code(clean_buffer.strip())
-                self.buffer = final_clean  # 정리된 내용으로 버퍼 업데이트
-                if settings.should_log_performance():
-                    print(f"✨ 요청에 맞는 코드 생성: {final_clean}")
-            
-            final_content = self.flush()
-            return final_content if final_content.strip() else "[END_OF_GENERATION]"
-        
-        # 🔥 극도로 엄격한 플러시 조건 (30-50 청크 목표)
-        if self.ultra_strict_mode:
-            # 극도로 엄격한 모드: 최소 크기의 3배 미달 시 절대 플러시 금지
-            if len(self.buffer) < self.min_chunk_size * 3:  # 600자 미만
-                # 극도로 제한된 예외: 오직 최대 크기 2배 초과나 강제 종료시만
-                if (len(self.buffer) >= self.max_chunk_size * 2 or  # 1600자 이상
-                    self._contains_end_token(self.buffer)):
-                    should_flush = True
-                else:
-                    should_flush = False
-            else:
-                # 최소 크기 3배 충족 시에만 다른 조건 검토
-                should_flush = (
-                    # 1. 최적 크기 3배 도달 + 완전한 코드 요소만
-                    (len(self.buffer) >= self.optimal_chunk_size * 3 and  # 1200자 이상
-                     self._has_complete_code_element()) or
-                    
-                    # 2. 완전한 코드 요소 완성 + 최소 600자 이상
-                    (len(self.buffer) >= 600 and
-                     self._has_complete_code_element() and
-                     self._has_strong_meaningful_boundary()) or
-                    
-                    # 3. 버퍼 크기 4배 초과 (강제 플러시)
-                    len(self.buffer) >= self.buffer_size * 4.0 or  # 320자 이상
-                    
-                    # 4. 최대 크기 2배 초과 (무조건 플러시)
-                    len(self.buffer) >= self.max_chunk_size * 2 or  # 1600자 이상
-                    
-                    # 5. 매우 엄격한 시간 기반 조건 (거의 발생 안함)
-                    (current_time - self.last_flush_time >= self.buffer_timeout * 10.0 and  # 1초 이상
-                     len(self.buffer) >= self.min_chunk_size * 4 and  # 800자 이상
-                     self._has_complete_code_element() and  # 완전한 코드 요소
-                     self._has_strong_meaningful_boundary())  # 강한 경계만
-                )
-        else:
-            # 기존 로직 (호환성)
-            should_flush = (
-                len(self.buffer) >= self.min_chunk_size and (
-                    len(self.buffer) >= self.buffer_size * 1.8 or
-                    current_time - self.last_flush_time >= self.buffer_timeout or
-                    self._has_complete_code_element() or
-                    len(self.buffer) >= self.max_chunk_size
-                )
-            )
-        
-        # 성능 모니터링 및 청크 품질 분류
-        if should_flush:
-            buffer_length = len(self.buffer)
-            
-            # 청크 크기별 분류 (새로운 기준)
-            if buffer_length < self.min_chunk_size:
-                self.small_chunks_count += 1
-                if settings.should_log_performance():
-                    print(f"⚠️ [ChunkBuffer] 작은 청크 플러시: {buffer_length}자 (비정상)")
-            elif buffer_length <= self.optimal_chunk_size:
-                self.optimal_chunks_count += 1
-                if settings.should_log_debug():
-                    print(f"✅ [ChunkBuffer] 최적 청크 플러시: {buffer_length}자")
-            else:
-                self.large_chunks_count += 1
-                if settings.should_log_performance():
-                    print(f"📦 [ChunkBuffer] 대형 청크 플러시: {buffer_length}자")
-            
-            result = self.flush()
-            
-            # 플러시 상세 로그
-            if settings.should_log_performance():
-                chunk_quality = "최적" if self.min_chunk_size <= buffer_length <= self.optimal_chunk_size else "비정상"
-                print(f"📤 [ChunkBuffer] {chunk_quality} 플러시 완료: {buffer_length}자 → {len(result)}자")
-            
-            return result
-        else:
-            if settings.should_log_debug():
-                print(f"🔄 [ChunkBuffer] 버퍼링 중: {len(self.buffer)}/{self.buffer_size}자")
-        
-        return None
-    
-    def get_performance_stats(self) -> Dict[str, Any]:
-        """강화된 성능 통계 반환"""
-        total_chunks = max(self.total_chunks_processed, 1)
-        avg_chunk_size = (self.total_bytes_processed / total_chunks)
-        
-        # 청크 품질 분석
-        small_ratio = round(self.small_chunks_count / total_chunks * 100, 2)
-        optimal_ratio = round(self.optimal_chunks_count / total_chunks * 100, 2)
-        large_ratio = round(self.large_chunks_count / total_chunks * 100, 2)
-        
-        # 성능 등급 평가
-        if small_ratio <= 5 and optimal_ratio >= 70:
-            performance_grade = "A"  # 우수
-        elif small_ratio <= 15 and optimal_ratio >= 50:
-            performance_grade = "B"  # 양호
-        elif small_ratio <= 30:
-            performance_grade = "C"  # 보통
-        else:
-            performance_grade = "D"  # 개선 필요
-        
         return {
-            "total_chunks": self.total_chunks_processed,
-            "total_bytes": self.total_bytes_processed,
-            "avg_chunk_size": round(avg_chunk_size, 2),
-            
-            # 청크 크기별 분류
-            "small_chunks_count": self.small_chunks_count,
-            "optimal_chunks_count": self.optimal_chunks_count,
-            "large_chunks_count": self.large_chunks_count,
-            
-            # 비율 분석
-            "small_chunks_ratio": small_ratio,
-            "optimal_chunks_ratio": optimal_ratio,
-            "large_chunks_ratio": large_ratio,
-            
-            # 성능 지표
-            "performance_grade": performance_grade,
-            "buffer_efficiency": round(optimal_ratio + (large_ratio * 0.7), 2),  # 효율성 점수
-            
-            # 현재 상태
-            "current_buffer_size": len(self.buffer),
-            "buffer_utilization": round(len(self.buffer) / self.buffer_size * 100, 2),
-            
-            # 설정 정보
-            "min_chunk_size": self.min_chunk_size,
-            "optimal_chunk_size": self.optimal_chunk_size,
-            "max_chunk_size": self.max_chunk_size,
-            "strict_mode": self.strict_size_enforcement
+            "valid": len(issues) == 0,
+            "issues": issues,
+            "confidence": max(0.0, confidence),
+            "code_length": len(code),
+            "line_count": code.count('\n') + 1
         }
     
-    def _clean_special_tokens(self, text: str) -> str:
-        """AI 모델 특수 토큰 제거"""
-        cleaned_text = text
-        for pattern in self.special_token_patterns:
-            cleaned_text = re.sub(pattern, '', cleaned_text, flags=re.IGNORECASE)
-        return cleaned_text
-    
-    def _has_complete_code_element(self) -> bool:
-        """완전한 코드 요소(함수, 클래스 등)가 있는지 확인"""
-        for pattern in self.complete_code_patterns:
-            if re.search(pattern, self.buffer, re.MULTILINE | re.DOTALL):
-                return True
-        return False
-    
-    def _has_strong_meaningful_boundary(self) -> bool:
-        """강한 의미 경계가 있는지 확인 (오직 최고 우선순위 패턴만)"""
-        # 오직 첫 번째 패턴만 체크: 완전한 함수 정의 (5줄 이상)
-        pattern = self.meaningful_delimiters[0]  # def 함수 (5줄 이상)만
-        if re.search(pattern, self.buffer, re.MULTILINE | re.DOTALL):
-            return True
-        return False
-    
-    def _has_meaningful_boundary(self) -> bool:
-        """의미있는 경계가 있는지 확인 (상위 패턴만)"""
-        # 상위 7개 패턴만 체크 (함수, 클래스, async함수, if-else, for, while, try-except)
-        for pattern in self.meaningful_delimiters[:7]:
-            if re.search(pattern, self.buffer, re.MULTILINE | re.DOTALL):
-                return True
-        return False
-    
-    def flush(self) -> str:
-        """버퍼 내용을 플러시하고 후처리 (통계는 add_chunk에서 이미 처리됨)"""
-        content = self.buffer
-        self.buffer = ""
-        self.last_flush_time = time.time()
+    def _check_basic_syntax(self, code: str) -> List[str]:
+        """기본 구문 오류 검사"""
+        issues = []
         
-        # 전역 통계만 업데이트 (크기별 분류는 add_chunk에서 이미 처리됨)
-        self.total_chunks_processed += 1
-        self.total_bytes_processed += len(content)
-        
-        # 강화된 텍스트 정리
-        if content:
-            # 1. AI 모델 특수 토큰 제거
-            content = self._clean_special_tokens(content)
-            
-            # 2. 여분의 공백 및 줄바꿈 정리
-            content = re.sub(r'\n\s*\n\s*\n+', '\n\n', content)  # 3개 이상 줄바꿈 → 2개
-            content = re.sub(r'[ \t]+', ' ', content)  # 여러 공백/탭 → 단일 공백
-            content = re.sub(r'[ \t]*\n[ \t]*', '\n', content)  # 줄바꿈 주변 공백 제거
-            
-            # 3. 코드 블록 정리
-            content = re.sub(r'\n{3,}```', '\n\n```', content)  # 코드 블록 앞 과도한 줄바꿈
-            content = re.sub(r'```\n{3,}', '```\n\n', content)  # 코드 블록 뒤 과도한 줄바꿈
-        
-        return content.strip()
-    
-    def force_flush(self) -> Optional[str]:
-        """강제 플러시 (스트리밍 종료 시) - 특수 토큰 제거 포함"""
-        if self.buffer:
-            content = self.flush()
-            # 최종 특수 토큰 제거
-            content = self._clean_special_tokens(content)
-            return content if content.strip() else None
-        return None
-
-    def _contains_end_token(self, text: str) -> bool:
-        """실제 vLLM stop token 확인 - 정확한 매칭만"""
-        if not text or not text.strip():
-            return False
-            
-        # 🎯 정확한 stop token들만 (완전 매칭)
-        exact_stop_tokens = [
-            "<|EOT|>",                                        # 최우선 스탑토큰
-            "\n# --- Generation Complete ---",               # vLLM 완료 마커
-            "# --- Generation Complete ---",                 # vLLM 완료 마커 (줄바꿈 없음)
-            "<|endoftext|>",                                 # GPT 스타일 종료
-            "<|im_end|>",                                    # ChatML 종료
-            "[DONE]",                                        # 커스텀 완료 신호
+        # 의심스러운 패턴들
+        suspicious_patterns = [
+            (r'print\(["\'][^"\']*["\']["\']', "print() 함수의 잘못된 따옴표 패턴"),
+            (r'["\'][^"\']*\([^)]*["\']', "함수 호출 내부의 잘못된 따옴표"),
+            (r'\([^)]*\([^)]*["\'][^"\']*$', "미완성된 중첩 함수 호출"),
+            (r'^[^=]*=[^=]*\([^)]*$', "미완성된 함수 할당"),
         ]
         
-        # 정확한 문자열 매칭 (부분 매칭 방지)
-        for token in exact_stop_tokens:
-            if token in text:
-                if settings.should_log_performance():
-                    print(f"🎯 [ChunkBuffer] 정확한 stop token 감지: '{token}' in '{text[:50]}...'")
-                return True
+        for pattern, issue_desc in suspicious_patterns:
+            if re.search(pattern, code):
+                issues.append(issue_desc)
                 
-        return False
+        return issues
     
-    def _extract_content_before_end_token(self, text: str) -> str:
-        """stop token 이전 내용 추출 - 정확한 매칭 + 부분 패턴"""
-        # 🎯 1차: 정확한 stop token들 (우선순위 순)
-        exact_tokens = [
-            "<|EOT|>",                                        # 최우선 스탑토큰
-            "\n# --- Generation Complete ---",               # vLLM 완료 마커
-            "# --- Generation Complete ---",                 # vLLM 완료 마커 (줄바꿈 없음)
-            "<|endoftext|>",                                 # GPT 스타일 종료
-            "<|im_end|>",                                    # ChatML 종료
-            "[DONE]",                                        # 커스텀 완료 신호
-        ]
+    def _check_bracket_balance(self, code: str) -> List[str]:
+        """괄호 균형 검사"""
+        issues = []
         
-        # 정확한 토큰 매칭 시도
-        for token in exact_tokens:
-            if token in text:
-                idx = text.find(token)
-                content_before = text[:idx].strip()
-                if settings.should_log_performance():
-                    print(f"✂️ 정확한 토큰 제거: '{token}' → '{content_before[:50]}...'")
-                return content_before
+        brackets = {'(': ')', '[': ']', '{': '}'}
+        stack = []
         
-        # 🔍 2차: 부분 패턴 매칭 (정규식)
-        partial_patterns = [
-            (r'#[-\s]*Generation[-\s]*Complete.*$', "Generation Complete"),
-            (r'</py>.*$', "Python end tag"),
-            (r'```\s*$', "Code block end"),
-            (r'EOT.*$', "EOT partial"),
-            (r'endoftext.*$', "endoftext partial"),
-        ]
+        for char in code:
+            if char in brackets:
+                stack.append(char)
+            elif char in brackets.values():
+                if not stack:
+                    issues.append("닫는 괄호가 여는 괄호보다 많음")
+                    break
+                last_open = stack.pop()
+                if brackets[last_open] != char:
+                    issues.append(f"괄호 타입 불일치: {last_open} vs {char}")
+                    
+        if stack:
+            issues.append(f"닫히지 않은 괄호: {len(stack)}개")
+            
+        return issues
+    
+    def _check_quote_balance(self, code: str) -> List[str]:
+        """따옴표 균형 검사"""
+        issues = []
         
-        for pattern, description in partial_patterns:
-            match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
-            if match:
-                content_before = text[:match.start()].strip()
-                if settings.should_log_performance():
-                    print(f"✂️ 부분 패턴 제거: '{description}' → '{content_before[:50]}...'")
-                return content_before
+        single_quotes = code.count("'")
+        double_quotes = code.count('"')
         
-        return text
+        if single_quotes % 2 != 0:
+            issues.append("홀수 개의 단일 따옴표")
+        if double_quotes % 2 != 0:
+            issues.append("홀수 개의 이중 따옴표")
+            
+        return issues
+    
+    def _check_ast_validity(self, code: str) -> List[str]:
+        """AST 파싱을 통한 구문 완전성 검사"""
+        issues = []
+        
+        try:
+            ast.parse(code)
+        except SyntaxError as e:
+            issues.append(f"구문 오류: {e.msg}")
+        except Exception as e:
+            issues.append(f"파싱 오류: {str(e)}")
+            
+        return issues
+    
+    def suggest_fix(self, code: str, issues: List[str]) -> str:
+        """간단한 자동 수정 제안"""
+        fixed_code = code
+        
+        # 간단한 수정들
+        for issue in issues:
+            if "닫히지 않은 괄호" in issue:
+                # 괄호 균형 맞추기
+                open_count = fixed_code.count('(')
+                close_count = fixed_code.count(')')
+                if open_count > close_count:
+                    fixed_code += ')' * (open_count - close_count)
+                    
+            elif "홀수 개의 단일 따옴표" in issue:
+                # 마지막에 따옴표 추가
+                if fixed_code.count("'") % 2 != 0:
+                    fixed_code += "'"
+                    
+            elif "홀수 개의 이중 따옴표" in issue:
+                # 마지막에 따옴표 추가
+                if fixed_code.count('"') % 2 != 0:
+                    fixed_code += '"'
+        
+        return fixed_code
 
-    def _get_detected_end_token(self, text: str) -> str:
-        """감지된 end token을 반환 - 정확한 매칭 + 부분 패턴"""
-        if not text or not text.strip():
+
+# 전역 검증기 인스턴스
+code_validator = CodeQualityValidator()
+
+
+# 🎯 응답 분리 시스템 - 설명과 코드 구분
+class ResponseParser:
+    """AI 응답을 설명과 코드로 분리하는 파서"""
+    
+    def __init__(self):
+        self.code_patterns = [
+            r'```python\s*(.*?)\s*```',  # Python 코드 블록
+            r'```\s*(.*?)\s*```',        # 일반 코드 블록
+            r'def\s+\w+.*?(?=\n\n|\Z)',  # 함수 정의
+            r'class\s+\w+.*?(?=\n\n|\Z)', # 클래스 정의
+            r'print\s*\([^)]*\)',        # print 문
+            r'^\s*[a-zA-Z_]\w*\s*=.*',   # 변수 할당
+        ]
+        
+        self.explanation_markers = [
+            '이 코드는', '설명:', '다음과 같이', '작동 방식:',
+            '주요 기능:', '사용법:', '예시:', '참고:',
+            'This code', 'Explanation:', 'How it works:',
+            'Usage:', 'Example:', 'Note:'
+        ]
+    
+    def parse_response(self, raw_response: str) -> Dict[str, str]:
+        """응답을 설명과 코드로 분리"""
+        if not raw_response or not raw_response.strip():
+            return {"explanation": "", "code": ""}
+        
+        # 1. 코드 블록 탐지 및 추출
+        code_blocks = self._extract_code_blocks(raw_response)
+        
+        # 2. 설명 부분 추출
+        explanation_text = self._extract_explanation(raw_response, code_blocks)
+        
+        # 3. 최종 정리
+        final_code = self._merge_code_blocks(code_blocks)
+        final_explanation = self._clean_explanation(explanation_text)
+        
+        return {
+            "explanation": final_explanation,
+            "code": final_code,
+            "metadata": {
+                "code_blocks_found": len(code_blocks),
+                "has_explanation": bool(final_explanation),
+                "parsing_confidence": self._calculate_confidence(final_explanation, final_code)
+            }
+        }
+    
+    def _extract_code_blocks(self, text: str) -> List[str]:
+        """코드 블록들을 추출"""
+        code_blocks = []
+        
+        # 1. 마크다운 코드 블록 추출
+        for pattern in [r'```python\s*(.*?)\s*```', r'```\s*(.*?)\s*```']:
+            matches = re.findall(pattern, text, re.DOTALL | re.IGNORECASE)
+            code_blocks.extend([match.strip() for match in matches if match.strip()])
+        
+        # 2. 코드 블록이 없으면 인라인 코드 패턴 찾기
+        if not code_blocks:
+            for pattern in self.code_patterns[2:]:  # 함수, 클래스, print 등
+                matches = re.findall(pattern, text, re.MULTILINE | re.IGNORECASE)
+                code_blocks.extend([match.strip() for match in matches if match.strip()])
+        
+        # 3. 중복 제거 및 정리
+        unique_blocks = []
+        for block in code_blocks:
+            if block and block not in unique_blocks:
+                # 최소 길이 확인 (너무 짧은 것 제외)
+                if len(block) >= 3:
+                    unique_blocks.append(block)
+        
+        return unique_blocks
+    
+    def _extract_explanation(self, text: str, code_blocks: List[str]) -> str:
+        """설명 부분을 추출"""
+        # 코드 블록 제거
+        explanation_text = text
+        
+        # 마크다운 코드 블록 제거
+        for pattern in [r'```python.*?```', r'```.*?```']:
+            explanation_text = re.sub(pattern, '', explanation_text, flags=re.DOTALL | re.IGNORECASE)
+        
+        # 인라인 코드 제거
+        for block in code_blocks:
+            explanation_text = explanation_text.replace(block, '')
+        
+        # 설명 마커 기반 추출
+        lines = explanation_text.split('\n')
+        explanation_lines = []
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            
+            # 명확한 설명 패턴 확인
+            is_explanation = any(marker in line for marker in self.explanation_markers)
+            
+            # 코드가 아닌 일반 텍스트인지 확인
+            is_not_code = not any(pattern in line for pattern in ['def ', 'class ', 'import ', 'print(', '='])
+            
+            if is_explanation or (is_not_code and len(line) > 10):
+                explanation_lines.append(line)
+        
+        return '\n'.join(explanation_lines)
+    
+    def _merge_code_blocks(self, code_blocks: List[str]) -> str:
+        """코드 블록들을 병합"""
+        if not code_blocks:
             return ""
-            
-        # 🎯 정확한 stop token들 (우선순위 순)
-        exact_stop_tokens = [
-            "<|EOT|>",                                        # 최우선 스탑토큰
-            "\n# --- Generation Complete ---",               # vLLM 완료 마커
-            "# --- Generation Complete ---",                 # vLLM 완료 마커 (줄바꿈 없음)
-            "<|endoftext|>",                                 # GPT 스타일 종료
-            "<|im_end|>",                                    # ChatML 종료
-            "[DONE]",                                        # 커스텀 완료 신호
-        ]
         
-        # 1차: 정확한 문자열 매칭
-        for token in exact_stop_tokens:
-            if token in text:
-                return token
+        # 중복 제거
+        unique_blocks = []
+        for block in code_blocks:
+            if block not in unique_blocks:
+                unique_blocks.append(block)
         
-        # 🔍 2차: 부분 패턴 매칭 (조각난 토큰 대응)
-        partial_patterns = [
-            r'#[-\s]*Generation[-\s]*Complete',               # Generation Complete 변형
-            r'</py>',                                        # Python 종료 태그
-            r'```\s*$',                                      # 코드 블록 종료
-            r'EOT',                                          # EOT 부분
-            r'endoftext',                                    # endoftext 부분
-        ]
+        # 블록이 하나면 그대로 반환
+        if len(unique_blocks) == 1:
+            return unique_blocks[0]
         
-        for pattern in partial_patterns:
-            if re.search(pattern, text, re.IGNORECASE):
-                return f"[PARTIAL:{pattern}]"
-        
-        return ""
-
-    def _generate_appropriate_code(self, text: str) -> str:
-        """요청 맥락을 고려하여 적절한 코드 생성"""
-        if not text or not text.strip():
-            return 'print("Hello")'
-            
-        # 🧹 1단계: 메타데이터 및 HTML 태그 완전 제거
-        cleaned = text
-        cleanup_patterns = [
-            r'</td>[^>]*>?',                          # HTML 테이블 태그
-            r'</?t[dr][^>]*>',                        # HTML 테이블 관련 태그  
-            r'</?\w+[^>]*>',                          # 일반 HTML 태그
-            r'---\w*Generation\w*---?[^"\']*',        # Generation 메타데이터 (강화)
-            r'#[-]+\w*Generation\w*[-]*[^"\']*',      # Generation 마커 (강화)
-            r'#[-]+\w+[-]*#?',                       # 기타 메타데이터 마커
-            r'</py>[^"\']*',                         # Python 종료 태그
-            r'<[^>]*>',                              # 모든 HTML 태그
-        ]
-        
-        for pattern in cleanup_patterns:
-            cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
-        
-        # 🎯 2단계: 기존 print 문이 있으면 정리해서 사용
-        print_patterns = [
-            r'print\s*\(\s*["\']([^"\']*)["\']?\s*\)',     # print("text") - 따옴표 누락 허용
-            r'print\s*\(\s*f["\']([^"\']*)["\']?\s*\)',    # print(f"text") - 따옴표 누락 허용
-        ]
-        
-        for pattern in print_patterns:
-            match = re.search(pattern, cleaned, re.IGNORECASE)
-            if match:
-                # 추출된 텍스트 정리
-                inner_text = match.group(1)
-                # 중복 문자열 정리 (HelloHello → Hello)
-                inner_text = re.sub(r'(\w+)\1+', r'\1', inner_text)
-                # 이상한 문자 제거
-                inner_text = re.sub(r'[^\w\s]', '', inner_text)
-                # 공백이면 기본값 사용
-                if not inner_text.strip():
-                    inner_text = self._extract_request_keyword()
-                return f'print("{inner_text}")'
-        
-        # 🔧 3단계: print 구조가 없으면 요청 맥락 기반 코드 생성
-        request_keyword = self._extract_request_keyword()
-        return f'print("{request_keyword}")'
+        # 여러 블록이 있으면 적절히 병합
+        return '\n\n'.join(unique_blocks)
     
-    def _extract_request_keyword(self) -> str:
-        """현재 요청에서 출력할 키워드 추출"""
-        if not self.request_context:
-            return "Hello"
-            
-        # 🎯 요청 내용에서 키워드 추출
-        context = self.request_context
+    def _clean_explanation(self, explanation: str) -> str:
+        """설명 텍스트 정리"""
+        if not explanation:
+            return ""
         
-        # 출력 관련 키워드 패턴 매칭
-        output_patterns = [
-            r'(\w+)을?\s*출력',        # "hancom을 출력", "hello를 출력"
-            r'(\w+)\s*출력',          # "hancom 출력"
-            r'print.*?["\'](\w+)["\']',  # print("hancom")
-            r'출력.*?["\'](\w+)["\']',   # 출력하는 "hancom"
-            r'["\'](\w+)["\'].*출력',    # "hancom" 출력
-        ]
+        # 불필요한 마커 제거
+        explanation = re.sub(r'^[#*\-=]+\s*', '', explanation, flags=re.MULTILINE)
         
-        for pattern in output_patterns:
-            match = re.search(pattern, context, re.IGNORECASE)
-            if match:
-                keyword = match.group(1)
-                # 의미있는 키워드만 반환 (조사, 동사 제외)
-                if len(keyword) > 1 and keyword not in ['코드', '작성', '하는', '해줘', '주세요']:
-                    return keyword
+        # 연속된 공백 정리
+        explanation = re.sub(r'\n\s*\n\s*\n', '\n\n', explanation)
         
-        # 패턴이 없으면 첫 번째 의미있는 단어 찾기
-        words = re.findall(r'\w+', context)
-        for word in words:
-            if len(word) > 1 and word not in ['코드', '작성', '하는', '해줘', '주세요', '출력']:
-                return word
-                
-        return "Hello"
+        # 앞뒤 공백 제거
+        explanation = explanation.strip()
         
-    def _extract_print_statements(self, text: str) -> str:
-        """하위 호환성을 위한 래퍼 메서드"""
-        return self._generate_appropriate_code(text)
+        return explanation
+    
+    def _calculate_confidence(self, explanation: str, code: str) -> float:
+        """파싱 신뢰도 계산"""
+        confidence = 0.5  # 기본값
+        
+        # 코드가 있으면 +0.3
+        if code and len(code) > 10:
+            confidence += 0.3
+        
+        # 설명이 있으면 +0.2
+        if explanation and len(explanation) > 20:
+            confidence += 0.2
+        
+        # 명확한 구분이 있으면 추가 점수
+        if explanation and code:
+            if any(marker in explanation for marker in self.explanation_markers):
+                confidence += 0.1
+        
+        return min(1.0, confidence)
+
+
+# 전역 파서 인스턴스
+response_parser = ResponseParser()
 
 
 class VLLMIntegrationService:
-    """vLLM 멀티 LoRA 서버와의 통합 서비스"""
+    """적응형 vLLM 통합 서비스"""
 
     def __init__(self):
-        self.vllm_base_url = settings.VLLM_SERVER_URL
-        self.timeout = aiohttp.ClientTimeout(total=settings.VLLM_TIMEOUT_SECONDS)
-        self.session = None
+        """서비스 초기화"""
+        self.base_url = "http://localhost:8000"
+        self.session: Optional[aiohttp.ClientSession] = None
+        self.is_connected = False
+        self.connection_retries = 0
+        self.max_retries = 3
         
-        # 🚀 청크 버퍼링 설정 극한 강화 (30-50 청크 목표)
-        self.chunk_buffering_enabled = True
-        self.default_buffer_size = 80  # 극한 감소: 500 → 80자
-        self.default_buffer_timeout = 0.1  # 극한 감소: 2.0 → 0.1초
+        # 적응형 시스템 초기화
+        self.adaptive_buffer, self.stop_detector = create_adaptive_system()
         
-        # 성능 최적화 설정
-        self.enable_performance_logging = settings.should_log_performance()
-        self.enable_debug_logging = settings.should_log_debug()
-        self.enable_chunk_details = getattr(settings, 'should_log_chunk_details', lambda: False)() 
+        # 성능 메트릭
+        self.total_requests = 0
+        self.successful_requests = 0
+        self.failed_requests = 0
+        self.avg_response_time = 0.0
         
-        if self.enable_performance_logging:
-            print(f"⚙️ [vLLM] 서비스 초기화: 버퍼크기={self.default_buffer_size}, 타임아웃={self.default_buffer_timeout}초")
+        logger.info("vLLM 통합 서비스 초기화 (적응형 모드)")
 
-    async def _get_session(self) -> aiohttp.ClientSession:
-        """aiohttp 세션 생성 및 재사용"""
-        if not self.session or self.session.closed:
-            self.session = aiohttp.ClientSession(
-                timeout=self.timeout,
-                headers={
-                    "Content-Type": "application/json",
-                    "Accept": "text/event-stream",
-                },
-            )
-        return self.session
+    async def __aenter__(self):
+        """비동기 컨텍스트 매니저 진입"""
+        await self.connect()
+        return self
 
-    async def check_health(self) -> Dict[str, Any]:
-        """vLLM 서버 상태 확인"""
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """비동기 컨텍스트 매니저 종료"""
+        await self.disconnect()
+
+    async def connect(self):
+        """vLLM 서버 연결"""
+        if self.session is None:
+            timeout = aiohttp.ClientTimeout(total=30)
+            self.session = aiohttp.ClientSession(timeout=timeout)
+        
         try:
-            session = await self._get_session()
-            async with session.get(f"{self.vllm_base_url}/health") as response:
+            async with self.session.get(f"{self.base_url}/health") as response:
                 if response.status == 200:
-                    result = await response.json()
-                    
-                    # 환경별 조건부 로깅
-                    if settings.should_log_debug():
-                        logger.log_system_event(
-                            "vLLM 서버 상태 확인", "success", {"server_status": result}
-                        )
-                    
-                    return {"status": "healthy", "details": result}
+                    self.is_connected = True
+                    self.connection_retries = 0
+                    logger.info("vLLM 서버 연결 성공")
                 else:
-                    logger.log_system_event(
-                        "vLLM 서버 상태 확인",
-                        "failed",
-                        {"http_status": response.status},
-                    )
-                    return {
-                        "status": "unhealthy",
-                        "http_status": response.status}
+                    raise aiohttp.ClientError(f"Health check failed: {response.status}")
         except Exception as e:
-            logger.log_error(e, "vLLM 서버 연결")
-            return {"status": "error", "error": str(e)}
-
-    async def get_available_models(self) -> Dict[str, Any]:
-        """사용 가능한 모델 목록 조회"""
-        try:
-            session = await self._get_session()
-            async with session.get(f"{self.vllm_base_url}/models") as response:
-                if response.status == 200:
-                    models = await response.json()
-                    
-                    # 환경별 조건부 로깅
-                    if settings.should_log_debug():
-                        logger.log_system_event(
-                            "사용 가능한 모델 조회", "success", {"model_count": len(models)}
-                        )
-                    
-                    return {"status": "success", "models": models}
-                else:
-                    return {"status": "error", "http_status": response.status}
-        except Exception as e:
-            logger.log_error(e, "모델 목록 조회")
-            return {"status": "error", "error": str(e)}
-
-    def _map_hapa_to_vllm_model(self, hapa_model: ModelType) -> VLLMModelType:
-        """HAPA 모델 타입을 vLLM 모델 타입으로 매핑"""
-        mapping = {
-            ModelType.CODE_COMPLETION: VLLMModelType.AUTOCOMPLETE,
-            ModelType.CODE_GENERATION: VLLMModelType.PROMPT,
-            ModelType.CODE_EXPLANATION: VLLMModelType.COMMENT,
-            ModelType.BUG_FIX: VLLMModelType.ERROR_FIX,
-            ModelType.CODE_REVIEW: VLLMModelType.PROMPT,
-            ModelType.CODE_OPTIMIZATION: VLLMModelType.PROMPT,
-            ModelType.UNIT_TEST_GENERATION: VLLMModelType.PROMPT,
-            ModelType.DOCUMENTATION: VLLMModelType.COMMENT,
-        }
-        return mapping.get(hapa_model, VLLMModelType.PROMPT)
-
-    def _prepare_vllm_request(
-        self, request: CodeGenerationRequest, user_id: str
-    ) -> Dict[str, Any]:
-        """HAPA 요청을 vLLM 요청 형식으로 변환 - 극한 성능 최적화"""
-        vllm_model = self._map_hapa_to_vllm_model(request.model_type)
-
-        # 🚀 요청 복잡도 분석 및 동적 파라미터 최적화
-        complexity_analysis = self._analyze_request_complexity(request.prompt)
-        optimized_params = self._get_optimized_parameters(complexity_analysis, vllm_model)
-        
-        # 🚀 강화된 프롬프트 최적화 (간결성 강제)
-        optimized_prompt = self._optimize_prompt_for_model(
-            request.prompt, vllm_model, request, complexity_analysis
-        )
-
-        # 사용자 선택 옵션 매핑
-        user_select_options = self._map_user_options(request)
-
-        # user_id를 숫자로 변환 (해시 사용)
-        try:
-            numeric_user_id = abs(hash(user_id)) % 1000000  # 1-1000000 범위
-        except BaseException:
-            numeric_user_id = 12345  # 기본값
-
-        # 🎯 실제 vLLM에서 사용하는 stop token 설정
-        stop_tokens = [
-            "<|EOT|>",                          # 최우선 스탑토큰
-            "\n# --- Generation Complete ---",  # vLLM 완료 마커
-            "→",                  # FIM 시작 토큰 (일본어 ｜)
-            "→",                    # FIM 종료 토큰 (일본어 ｜)
-            "<|endoftext|>",                    # GPT 스타일 종료 토큰 (영어 |)
-        ]
-        
-        # 간단한 요청에 대해서는 더 엄격한 종료 조건 추가
-        if complexity_analysis["level"] == "simple":
-            stop_tokens.extend([
-                "\n\n```",       # 코드 블록 후 즉시 종료
-                "\n\n#",         # 주석 시작 시 종료
-                "\nprint(",      # 추가 print문 방지
-                "\n# 설명",      # 설명 시작 시 종료
-                "\n# 예시",      # 예시 시작 시 종료
-            ])
-
-        vllm_request = {
-            "user_id": numeric_user_id,
-            "model_type": vllm_model.value,
-            "prompt": optimized_prompt,
-            "user_select_options": user_select_options,
-            "temperature": optimized_params["temperature"],
-            "top_p": optimized_params["top_p"],
-            "max_tokens": optimized_params["max_tokens"],
-            "stop": stop_tokens,  # 🚀 종료 토큰 추가
-        }
-
-        # 환경별 조건부 로깅 - 요청 상세 정보
-        if settings.should_log_request_response():
-            logger.log_system_event(
-                f"vLLM 요청 준비 (최적화됨)",
-                "success",
-                {
-                    "user_id": user_id,
-                    "numeric_user_id": numeric_user_id,
-                    "model_type": vllm_model.value,
-                    "prompt_length": len(optimized_prompt),
-                    "complexity": complexity_analysis["level"],
-                    "max_tokens": optimized_params["max_tokens"],
-                    "temperature": optimized_params["temperature"],
-                },
-            )
-
-        return vllm_request
-    
-    def _analyze_request_complexity(self, prompt: str) -> Dict[str, Any]:
-        """요청 복잡도 분석 - 간단/중간/복잡 분류"""
-        prompt_lower = prompt.lower()
-        
-        # 🔍 간단한 요청 패턴 감지
-        simple_patterns = [
-            # 출력 관련
-            r'(출력|print|display).*["\']?\w{1,10}["\']?',  # "jay 출력", "hello world 출력"
-            r'["\']?\w{1,10}["\']?.*출력',                 # "jay를 출력"
-            r'print\s*\(["\']?\w{1,20}["\']?\)',           # print("jay")
+            self.is_connected = False
+            self.connection_retries += 1
+            logger.error(f"vLLM 서버 연결 실패 (시도 {self.connection_retries}/{self.max_retries}): {e}")
             
-            # 변수 선언
-            r'^[a-zA-Z_]\w*\s*=\s*["\']?\w{1,20}["\']?$',  # name = "jay"
-            
-            # 간단한 함수 호출
-            r'^\w+\(\)$',                                  # func()
-            
-            # 한 줄 코드
-            r'^.{1,50}$',                                  # 50자 이하
-        ]
-        
-        # 🔍 복잡한 요청 패턴 감지
-        complex_patterns = [
-            # 클래스/함수 정의
-            r'(class|def|async def)',
-            r'(algorithm|알고리즘)',
-            r'(database|데이터베이스|db)',
-            r'(api|rest|graphql)',
-            r'(optimization|최적화)',
-            r'(machine learning|머신러닝|ml)',
-            r'(data structure|자료구조)',
-            r'(design pattern|디자인패턴)',
-            
-            # 복잡한 기능
-            r'(error handling|예외처리)',
-            r'(unit test|테스트)',
-            r'(documentation|문서화)',
-            r'(refactor|리팩토링)',
-        ]
-        
-        # 길이 기반 분석
-        char_count = len(prompt)
-        word_count = len(prompt.split())
-        
-        # 패턴 매칭
-        simple_matches = sum(1 for pattern in simple_patterns if re.search(pattern, prompt, re.IGNORECASE))
-        complex_matches = sum(1 for pattern in complex_patterns if re.search(pattern, prompt, re.IGNORECASE))
-        
-        # 복잡도 결정
-        if simple_matches > 0 and char_count <= 50 and complex_matches == 0:
-            complexity_level = "simple"
-            confidence = 0.9
-        elif complex_matches > 0 or char_count > 200 or word_count > 30:
-            complexity_level = "complex"
-            confidence = 0.8
-        else:
-            complexity_level = "medium"
-            confidence = 0.7
-        
-        return {
-            "level": complexity_level,
-            "confidence": confidence,
-            "char_count": char_count,
-            "word_count": word_count,
-            "simple_matches": simple_matches,
-            "complex_matches": complex_matches,
-            "patterns_detected": []
-        }
-    
-    def _get_optimized_parameters(self, complexity_analysis: Dict[str, Any], model_type: VLLMModelType) -> Dict[str, Any]:
-        """복잡도 분석 결과에 따른 최적화된 파라미터 반환"""
-        complexity_level = complexity_analysis["level"]
-        
-        # 🚀 복잡도별 극한 최적화 파라미터
-        if complexity_level == "simple":
-            # 간단한 요청: 극한 최적화 (3-5초, 30-50 청크 목표)
-            return {
-                "max_tokens": 50,      # 극한 감소: 1024 → 50 토큰
-                "temperature": 0.1,    # 극한 감소: 0.3 → 0.1 (정확성 우선)
-                "top_p": 0.8,          # 감소: 0.95 → 0.8 (집중도 증가)
-            }
-        elif complexity_level == "medium":
-            # 중간 복잡도: 적당한 최적화
-            return {
-                "max_tokens": 200,     # 크게 감소: 1024 → 200 토큰
-                "temperature": 0.2,    # 감소: 0.3 → 0.2
-                "top_p": 0.85,         # 감소: 0.95 → 0.85
-            }
-        else:  # complex
-            # 복잡한 요청: 보수적 최적화
-            return {
-                "max_tokens": 500,     # 중간 감소: 1024 → 500 토큰
-                "temperature": 0.25,   # 약간 감소: 0.3 → 0.25
-                "top_p": 0.9,          # 약간 감소: 0.95 → 0.9
-            }
-
-    def _optimize_prompt_for_model(
-        self,
-        prompt: str,
-        model_type: VLLMModelType,
-        request: CodeGenerationRequest,
-        complexity_analysis: Dict[str, Any]) -> str:
-        """모델 타입에 따른 프롬프트 최적화 - 간결성 강제"""
-        
-        complexity_level = complexity_analysis["level"]
-        
-        # 🚀 간단한 요청에 대한 강화된 프롬프트 최적화
-        if complexity_level == "simple":
-            # 간단한 요청: 극도로 간결한 응답 강제
-            if model_type == VLLMModelType.AUTOCOMPLETE:
-                return prompt
-            
-            # 간단한 출력 요청 최적화
-            if re.search(r'(출력|print)', prompt, re.IGNORECASE):
-                # "jay 출력" -> 강제로 한 줄 코드만 요청
-                return f"""다음 요청에 대해 Python 코드 한 줄만 작성하세요. 설명이나 주석 없이 코드만 반환하세요.
-
-요청: {prompt}
-
-조건:
-- 한 줄 코드만 작성
-- print() 함수 사용
-- 설명 금지
-- 예시나 추가 내용 금지
-
-코드:"""
-            
+            if self.connection_retries < self.max_retries:
+                await asyncio.sleep(2 ** self.connection_retries)  # 지수 백오프
+                await self.connect()
             else:
-                return f"""다음 요청에 대해 최소한의 Python 코드만 작성하세요. 간결하고 핵심적인 코드만 반환하세요.
+                raise ConnectionError("vLLM 서버 연결 최대 재시도 횟수 초과")
 
-요청: {prompt}
+    async def disconnect(self):
+        """연결 종료"""
+        if self.session:
+            await self.session.close()
+            self.session = None
+        self.is_connected = False
+        logger.info("vLLM 서버 연결 종료")
 
-조건:
-- 최대 3줄 코드
-- 필수 코드만 작성
-- 설명 최소화
-- 예시 금지
-
-코드:"""
+    async def generate_code_streaming(
+        self,
+        request: CodeGenerationRequest,
+        chunk_callback: Optional[callable] = None
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """적응형 스트리밍 코드 생성 (구조화된 응답)"""
         
-        # 기존 로직 (중간/복잡한 요청)
-        if model_type == VLLMModelType.AUTOCOMPLETE:
-            # 자동완성: 컨텍스트 중심으로 간단한 프롬프트
-            return prompt
-
-        elif model_type == VLLMModelType.COMMENT:
-            # 주석/문서화: 코드 해석 및 문서화 프롬프트
-            context_prefix = (
-                f"# 대상 코드:\n{request.context}\n\n" if request.context else ""
-            )
-            return f"{context_prefix}# 문서화 요청: {prompt}"
-
-        elif model_type == VLLMModelType.ERROR_FIX:
-            # 버그 수정: 오류 분석 및 수정 프롬프트
-            context_prefix = (
-                f"# 오류가 있는 코드:\n{request.context}\n\n" if request.context else ""
-            )
-            return f"""{context_prefix}# 버그 수정 요청: {prompt}
-
-# 수정 가이드라인:
-1. 오류 원인 명확히 분석
-2. 최소한의 수정으로 문제 해결
-3. 간단하고 명확한 코드 작성
-
-## 수정된 코드:"""
-
-        else:  # PROMPT (기본)
-            # 일반 코드 생성: 요구사항을 명확히 표현
-            if complexity_level == "medium":
-                context_prefix = (
-                    f"# 컨텍스트:\n{request.context}\n\n" if request.context else ""
-                )
-                return f"""{context_prefix}# 요청사항: {prompt}
-
-조건:
-- 간결하고 실용적인 코드 작성
-- 필수 기능만 구현
-- 과도한 설명 금지
-
-코드:"""
-            else:  # complex
-                context_prefix = (
-                    f"# 컨텍스트:\n{request.context}\n\n" if request.context else ""
-                )
-                return f"{context_prefix}# 요청사항: {prompt}"
-
-    def _map_user_options(
-            self, request: CodeGenerationRequest) -> Dict[str, Any]:
-        """HAPA 사용자 옵션을 vLLM 형식으로 매핑"""
-        options = {}
-
-        # 프로그래밍 기술 수준 매핑
-        if hasattr(request, "programming_level"):
-            level_mapping = {
-                "beginner": "beginner",
-                "intermediate": "intermediate",
-                "advanced": "advanced",
-                "expert": "advanced",
-            }
-            options["python_skill_level"] = level_mapping.get(
-                request.programming_level, "intermediate"
-            )
-        else:
-            options["python_skill_level"] = "intermediate"
-
-        # 설명 스타일 매핑
-        if hasattr(request, "explanation_detail"):
-            detail_mapping = {
-                "minimal": "brief",
-                "standard": "standard",
-                "detailed": "detailed",
-                "comprehensive": "detailed",
-            }
-            options["explanation_style"] = detail_mapping.get(
-                request.explanation_detail, "standard"
-            )
-        else:
-            options["explanation_style"] = "standard"
-
-        # 추가 옵션들
-        if hasattr(request, "include_comments"):
-            options["include_comments"] = request.include_comments
-
-        if hasattr(request, "code_style"):
-            options["code_style"] = request.code_style
-
-        return options
-
-    async def generate_code_stream(
-        self, request: CodeGenerationRequest, user_id: str
-    ) -> AsyncGenerator[str, None]:
-        """vLLM 서버로부터 스트리밍 코드 생성 (개선된 청크 처리)"""
-
-        vllm_request = self._prepare_vllm_request(request, user_id)
+        start_time = time.time()
+        self.total_requests += 1
+        accumulated_content = ""  # 전체 응답 누적
         
-        # 청크 버퍼 초기화 (요청 맥락 포함)
-        chunk_buffer = ChunkBuffer(
-            buffer_size=self.default_buffer_size,
-            buffer_timeout=self.default_buffer_timeout,
-            request_context=request.prompt if hasattr(request, 'prompt') else ""
-        ) if self.chunk_buffering_enabled else None
-
-        if self.enable_performance_logging:
-            print(f"🔧 [vLLM] 청크 버퍼링 설정: 활성화={self.chunk_buffering_enabled}, 버퍼크기={self.default_buffer_size}, 타임아웃={self.default_buffer_timeout}")
-            if chunk_buffer:
-                print(f"✅ [vLLM] ChunkBuffer 생성 완료")
-
         try:
-            session = await self._get_session()
+            # 적응형 버퍼 설정
+            complexity = self.adaptive_buffer.configure_for_request(
+                request.prompt, 
+                request.context
+            )
+            
+            # 요청 준비
+            payload = self._prepare_vllm_payload(request, complexity)
+            
+            logger.info(f"구조화된 스트리밍 요청 시작 (복잡도: {complexity.value})")
+            
+            if not self.is_connected:
+                await self.connect()
 
-            async with session.post(
-                f"{self.vllm_base_url}/generate/stream", json=vllm_request
+            async with self.session.post(
+                f"{self.base_url}/v1/completions",
+                json=payload,
+                headers={"Content-Type": "application/json"}
             ) as response:
 
                 if response.status != 200:
-                    error_msg = f"vLLM 서버 오류: HTTP {response.status}"
-                    logger.log_system_event(
-                        "vLLM 서버 오류",
-                        "failed",
-                        {"user_id": user_id, "status": response.status},
-                    )
-                    yield f"data: {json.dumps({'error': error_msg})}\n\n"
-                    return
-
-                # 스트리밍 시작 로그 (성능 로그로 분류)
-                if self.enable_performance_logging:
-                    logger.log_system_event(
-                        "vLLM 스트리밍 시작",
-                        "started",
-                        {"user_id": user_id, "model": vllm_request["model_type"]},
-                    )
-
-                chunk_count = 0
-                total_content_length = 0
-                streaming_start_time = time.time()
+                    error_text = await response.text()
+                    raise aiohttp.ClientError(f"vLLM API 오류 {response.status}: {error_text}")
 
                 async for line in response.content:
-                    try:
-                        line_text = line.decode("utf-8").strip()
+                    line_text = line.decode('utf-8').strip()
 
-                        if not line_text:
-                            continue
-
-                        # Server-Sent Events 형식 처리
-                        if line_text.startswith("data: "):
-                            data_content = line_text[6:]  # 'data: ' 제거
-
-                            # 스트림 종료 신호 감지 - 강화된 처리
-                            if data_content == "[DONE]" or data_content.strip() == "[DONE]":
-                                # 버퍼에 남은 내용 플러시
-                                if chunk_buffer:
-                                    final_content = chunk_buffer.force_flush()
-                                    if final_content and final_content.strip():
-                                        chunk_count += 1
-                                        total_content_length += len(final_content)
-                                        yield f"data: {json.dumps({'text': final_content})}\n\n"
-                                        if self.enable_debug_logging:
-                                            print(f"📤 [vLLM] 최종 버퍼 플러시: '{final_content[:30]}...'")
-                                
-                                # 완료 로그 (성능 로그로 분류)
-                                streaming_duration = time.time() - streaming_start_time
-                                if self.enable_performance_logging:
-                                    # 버퍼 성능 통계 포함
-                                    buffer_stats = chunk_buffer.get_performance_stats() if chunk_buffer else {}
-                                    logger.log_system_event(
-                                        "vLLM 스트리밍", "completed", {
-                                            "user_id": user_id,
-                                            "total_chunks": chunk_count,
-                                            "total_content_length": total_content_length,
-                                            "duration_seconds": round(streaming_duration, 2),
-                                            "avg_chunk_size": round(total_content_length / max(chunk_count, 1), 1),
-                                            "buffer_stats": buffer_stats
-                                        })
-                                    print(f"🏁 [vLLM] 스트리밍 완료: {chunk_count}개 청크, {total_content_length}자, {streaming_duration:.2f}초")
-                                    
-                                    # 성능 경고 확인
-                                    if buffer_stats.get('small_chunks_ratio', 0) > 30:
-                                        print(f"⚠️ [vLLM] 작은 청크 비율 높음: {buffer_stats.get('small_chunks_ratio', 0)}%")
-                                
-                                yield f"data: [DONE]\n\n"
-                                return  # 확실한 종료
-
-                            # JSON 데이터 파싱 및 처리
-                            try:
-                                parsed_data = json.loads(data_content)
-                                
-                                # 텍스트 콘텐츠 추출
-                                text_content = parsed_data.get('text', '')
-                                if text_content:
-                                    total_content_length += len(text_content)
-                                    
-                                    # 디버그 로그는 개발 환경에서만
-                                    if self.enable_debug_logging:
-                                        print(f"📥 [vLLM] 원시 텍스트: '{text_content[:20]}...' (길이: {len(text_content)})")
-                                    
-                                    if chunk_buffer:
-                                        # 버퍼링 처리
-                                        buffered_content = chunk_buffer.add_chunk(text_content)
-                                        if buffered_content and buffered_content.strip():
-                                            chunk_count += 1
-                                            
-                                            # 성능 로그는 성능 모드에서만
-                                            if self.enable_performance_logging:
-                                                print(f"📤 [vLLM] 버퍼링 출력: #{chunk_count}, 길이={len(buffered_content)}")
-                                            
-                                            # END_OF_GENERATION 신호 감지 시 즉시 중단
-                                            if buffered_content == "[END_OF_GENERATION]":
-                                                streaming_duration = time.time() - streaming_start_time
-                                                if self.enable_performance_logging:
-                                                    logger.log_system_event(
-                                                        "vLLM 스트리밍", "im_end_detected", {
-                                                            "user_id": user_id,
-                                                            "total_chunks": chunk_count,
-                                                            "total_content_length": total_content_length,
-                                                            "early_termination": True,
-                                                            "duration_seconds": round(streaming_duration, 2)
-                                                        })
-                                                    print(f"🛑 [vLLM] END_OF_GENERATION 신호 - 조기 종료")
-                                                yield f"data: [DONE]\n\n"
-                                                return
-                                            
-                                            # 청크 상세 로그 (개발 환경에서만)
-                                            if self.enable_chunk_details:
-                                                logger.debug(
-                                                    f"청크 전송: #{chunk_count}, 길이: {len(buffered_content)}"
-                                                )
-                                            
-                                            yield f"data: {json.dumps({'text': buffered_content})}\n\n"
-                                        # else: 버퍼링 중이므로 아무것도 하지 않음 (로그 생략)
-                                    else:
-                                        # 버퍼링 비활성화 시 직접 전송 (하지만 im_end 토큰 체크)
-                                        if self.enable_debug_logging:
-                                            print(f"🚫 [vLLM] 버퍼링 비활성화 - 직접 전송")
-                                        
-                                        # 🎯 실제 vLLM stop token 감지 시 즉시 중단
-                                        vllm_stop_tokens = [
-                                            "<|EOT|>",                        # 최우선 스탑토큰
-                                            "\n# --- Generation Complete ---",
-                                            "<｜fim▁begin｜>",
-                                            "<｜fim▁hole｜>",
-                                            "<｜fim▁end｜>",
-                                            "<|endoftext|>",
-                                        ]
-                                        
-                                        detected_stop_token = None
-                                        for stop_token in vllm_stop_tokens:
-                                            if stop_token in text_content:
-                                                detected_stop_token = stop_token
-                                                break
-                                        
-                                        if detected_stop_token:
-                                            streaming_duration = time.time() - streaming_start_time
-                                            if self.enable_performance_logging:
-                                                logger.log_system_event(
-                                                    "vLLM 스트리밍", "vllm_stop_token_detected_direct", {
-                                                        "user_id": user_id,
-                                                        "total_chunks": chunk_count,
-                                                        "total_content_length": total_content_length,
-                                                        "early_termination": True,
-                                                        "stop_token": detected_stop_token,
-                                                        "duration_seconds": round(streaming_duration, 2)
-                                                    })
-                                                print(f"🔚 실제 vLLM stop token 감지: '{detected_stop_token}' - 스트리밍 종료")
-                                            
-                                            # stop token 이전 깨끗한 내용만 추출
-                                            clean_content = text_content.split(detected_stop_token)[0].strip()
-                                            if clean_content:
-                                                yield f"data: {json.dumps({'text': clean_content})}\n\n"
-                                            
-                                            yield f"data: [DONE]\n\n"
-                                            return
-                                        
-                                        chunk_count += 1
-                                        yield f"data: {data_content}\n\n"
-                                else:
-                                    # 텍스트가 없는 메타데이터 청크는 그대로 전송
-                                    yield f"data: {data_content}\n\n"
-                                    
-                            except json.JSONDecodeError:
-                                # JSON이 아닌 순수 텍스트인 경우
-                                if chunk_buffer:
-                                    buffered_content = chunk_buffer.add_chunk(data_content)
-                                    if buffered_content and buffered_content.strip():
-                                        chunk_count += 1
-                                        yield f"data: {json.dumps({'text': buffered_content})}\n\n"
-                                else:
-                                    chunk_count += 1
-                                    yield f"data: {data_content}\n\n"
-
-                    except Exception as e:
-                        # 라인 처리 오류는 디버그 환경에서만 로깅
-                        if self.enable_debug_logging:
-                            logger.log_error(e, f"스트림 라인 처리 - user_id: {user_id}")
+                    if not line_text or not line_text.startswith('data: '):
                         continue
 
-        except asyncio.TimeoutError:
-            error_msg = "vLLM 서버 응답 시간 초과"
-            logger.log_system_event("vLLM 응답", "timeout", {"user_id": user_id})
-            yield f"data: {json.dumps({'error': error_msg})}\n\n"
+                    if line_text == 'data: [DONE]':
+                        # 최종 응답 분리 및 전송
+                        if accumulated_content.strip():
+                            parsed_response = response_parser.parse_response(accumulated_content)
+                            
+                            # 설명 청크 전송
+                            if parsed_response["explanation"]:
+                                yield {
+                                    "type": "explanation",
+                                    "content": parsed_response["explanation"],
+                                    "is_complete": False,
+                                    "metadata": {
+                                        "chunk_type": "explanation",
+                                        "complexity": complexity.value
+                                    }
+                                }
+                            
+                            # 코드 청크 전송
+                            if parsed_response["code"]:
+                                yield {
+                                    "type": "code",
+                                    "content": parsed_response["code"],
+                                    "is_complete": False,
+                                    "metadata": {
+                                        "chunk_type": "code",
+                                        "complexity": complexity.value,
+                                        "parsing_confidence": parsed_response["metadata"]["parsing_confidence"]
+                                    }
+                                }
+                            
+                            # 완료 신호
+                            yield {
+                                "type": "done",
+                                "content": "",
+                                "is_complete": True,
+                                "metadata": {
+                                    **self.adaptive_buffer.get_metrics(),
+                                    **parsed_response["metadata"]
+                                }
+                            }
+                        break
+                    
+                    # JSON 파싱
+                    try:
+                        json_data = json.loads(line_text[6:])  # 'data: ' 제거
+                        
+                        if 'choices' in json_data and json_data['choices']:
+                            choice = json_data['choices'][0]
+                            
+                            if 'delta' in choice and 'content' in choice['delta']:
+                                content = choice['delta']['content']
+                                accumulated_content += content  # 전체 응답에 누적
+                                
+                                # 적응형 버퍼에 추가
+                                ready_chunks = self.adaptive_buffer.add_chunk(content)
+                                
+                                # 실시간 청크 전송 (타입 구분 없이)
+                                for chunk in ready_chunks:
+                                    if chunk.strip():
+                                        # Stop token 감지
+                                        should_stop, reason = self.stop_detector.should_stop(
+                                            chunk, 
+                                            {'request_type': complexity.value}
+                                        )
+                                        
+                                        if should_stop:
+                                            logger.info(f"Stop token 감지: {reason}")
+                                            # 조기 종료 시에도 응답 분리 적용
+                                            if accumulated_content.strip():
+                                                parsed_response = response_parser.parse_response(accumulated_content)
+                                                
+                                                if parsed_response["explanation"]:
+                                                    yield {
+                                                        "type": "explanation",
+                                                        "content": parsed_response["explanation"],
+                                                        "is_complete": True,
+                                                        "stop_reason": reason
+                                                    }
+                                                
+                                                if parsed_response["code"]:
+                                                    yield {
+                                                        "type": "code",
+                                                        "content": parsed_response["code"],
+                                                        "is_complete": True,
+                                                        "stop_reason": reason
+                                                    }
+                                            return
+
+                                        # 일반 실시간 청크 전송 (프리뷰용)
+                                        yield {
+                                            "type": "token",
+                                            "content": chunk,
+                                            "is_complete": False,
+                                            "metadata": {
+                                                "complexity": complexity.value,
+                                                "chunk_size": len(chunk),
+                                                "is_preview": True
+                                            }
+                                        }
+                                        
+                                        # 콜백 호출
+                                        if chunk_callback:
+                                            await chunk_callback(chunk)
+                                            
+                    except json.JSONDecodeError as e:
+                        logger.warning(f"JSON 파싱 오류: {e}, 라인: {line_text}")
+                        continue
+                    except Exception as e:
+                        logger.error(f"청크 처리 오류: {e}")
+                        continue
+
+            # 성공 통계 업데이트
+            self.successful_requests += 1
+            response_time = time.time() - start_time
+            self._update_metrics(response_time, True)
+            
+            logger.info(f"구조화된 스트리밍 완료 (응답시간: {response_time:.2f}초)")
 
         except Exception as e:
-            error_msg = f"vLLM 서버 연결 오류: {str(e)}"
-            logger.log_error(e, f"vLLM 서버 연결 - user_id: {user_id}")
-            yield f"data: {json.dumps({'error': error_msg})}\n\n"
+            self.failed_requests += 1
+            response_time = time.time() - start_time
+            self._update_metrics(response_time, False)
+            
+            logger.error(f"구조화된 스트리밍 생성 오류: {e}")
+            
+            yield {
+                "type": "error",
+                "content": f"코드 생성 중 오류가 발생했습니다: {str(e)}",
+                "is_complete": True,
+                "error": str(e)
+            }
 
-    async def generate_code_sync(
-        self, request: CodeGenerationRequest, user_id: str
-    ) -> CodeGenerationResponse:
-        """동기식 코드 생성 (스트리밍 응답을 모두 수집)"""
+    def _prepare_vllm_payload(self, request: CodeGenerationRequest, complexity) -> Dict[str, Any]:
+        """vLLM 요청 페이로드 준비"""
+        
+        # 복잡도별 파라미터 조정
+        if complexity.value == 'simple':
+            temperature = 0.3
+            max_tokens = 400
+            top_p = 0.8
+        elif complexity.value == 'medium':
+            temperature = 0.5
+            max_tokens = 600
+            top_p = 0.9
+        else:  # complex
+            temperature = 0.7
+            max_tokens = 800
+            top_p = 0.95
+        
+        # 기본 프롬프트 구성
+        enhanced_prompt = self._build_enhanced_prompt(request)
+        
+        payload = {
+            "model": "CodeLlama-7b-Python-hf",
+            "prompt": enhanced_prompt,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "top_p": top_p,
+            "frequency_penalty": 0.1,
+            "presence_penalty": 0.1,
+            "stream": True,
+            "stop": ["[DONE]"]  # 단순화된 stop token
+        }
+        
+        logger.debug(f"vLLM 페이로드 준비 완료 (복잡도: {complexity.value})")
+        return payload
 
-        generated_content = []
-        error_occurred = False
-        error_message = ""
+    def _build_enhanced_prompt(self, request: CodeGenerationRequest) -> str:
+        """향상된 프롬프트 구성"""
+        
+        # 기본 시스템 프롬프트
+        system_prompt = """당신은 고품질 Python 코드를 생성하는 AI 코딩 어시스턴트입니다.
+다음 규칙을 따라 코드를 생성해주세요:
+1. 완전하고 실행 가능한 코드를 작성
+2. 적절한 주석과 문서화 포함
+3. 파이썬 최선의 관례(best practices) 준수
+4. 간결하고 읽기 쉬운 코드 작성"""
 
-        async for chunk in self.generate_code_stream(request, user_id):
-            try:
-                if chunk.startswith("data: "):
-                    data_content = chunk[6:].strip()
+        # 컨텍스트가 있는 경우 추가
+        context_section = ""
+        if request.context and request.context.strip():
+            context_section = f"\n\n기존 코드 컨텍스트:\n```python\n{request.context}\n```"
 
-                    if data_content == "[DONE]":
-                        break
+        # 최종 프롬프트 조합
+        full_prompt = f"""{system_prompt}
 
-                    # JSON 파싱 시도
-                    try:
-                        data = json.loads(data_content)
-                        if "error" in data:
-                            error_occurred = True
-                            error_message = data["error"]
-                            break
-                        elif "text" in data:
-                            generated_content.append(data["text"])
-                        elif isinstance(data, str):
-                            generated_content.append(data)
-                    except json.JSONDecodeError:
-                        # JSON이 아닌 경우 직접 텍스트로 처리
-                        generated_content.append(data_content)
+사용자 요청: {request.prompt}{context_section}
 
-            except Exception as e:
-                logger.log_error(e, f"동기식 응답 처리 - user_id: {user_id}")
-                error_occurred = True
-                error_message = str(e)
-                break
+Python 코드:
+```python"""
 
-        if error_occurred:
-            return CodeGenerationResponse(
-                success=False,
-                generated_code="",
-                error_message=error_message,
-                model_used=self._map_hapa_to_vllm_model(
-                    request.model_type).value,
-                processing_time=0,
-                token_usage={
-                    "total_tokens": 0},
-            )
+        return full_prompt
 
-        final_code = "".join(generated_content)
-
-        return CodeGenerationResponse(
-            success=True,
-            generated_code=final_code,
-            model_used=self._map_hapa_to_vllm_model(request.model_type).value,
-            processing_time=0,  # 실제 처리 시간 계산 필요
-            token_usage={"total_tokens": len(final_code.split())},  # 근사치
+    def _update_metrics(self, response_time: float, success: bool):
+        """성능 메트릭 업데이트"""
+        # 이동 평균으로 응답 시간 업데이트
+        alpha = 0.1
+        self.avg_response_time = (
+            self.avg_response_time * (1 - alpha) + response_time * alpha
         )
 
-    async def close(self):
-        """세션 정리"""
-        if self.session and not self.session.closed:
-            await self.session.close()
+    def get_service_status(self) -> Dict[str, Any]:
+        """서비스 상태 조회"""
+        success_rate = (
+            self.successful_requests / max(self.total_requests, 1) * 100
+        )
+        
+        return {
+            "connected": self.is_connected,
+            "total_requests": self.total_requests,
+            "successful_requests": self.successful_requests,
+            "failed_requests": self.failed_requests,
+            "success_rate": round(success_rate, 2),
+            "avg_response_time": round(self.avg_response_time, 2),
+            "adaptive_system": {
+                "buffer_metrics": self.adaptive_buffer.get_metrics(),
+                "current_complexity": self.adaptive_buffer.current_complexity.value if self.adaptive_buffer.current_complexity else None,
+            }
+        }
 
-    def __del__(self):
-        """소멸자에서 세션 정리"""
-        if hasattr(
-                self,
-                "session") and self.session and not self.session.closed:
-            # 이벤트 루프가 실행 중인 경우에만 정리
-            try:
-                loop = asyncio.get_running_loop()
-                loop.create_task(self.session.close())
-            except RuntimeError:
-                pass
+    async def health_check(self) -> bool:
+        """헬스 체크"""
+        try:
+            if not self.session:
+                await self.connect()
+            
+            async with self.session.get(f"{self.base_url}/health") as response:
+                return response.status == 200
+        except Exception as e:
+            logger.error(f"헬스 체크 실패: {e}")
+            return False
 
-
-# 전역 서비스 인스턴스
-vllm_service = VLLMIntegrationService()
+# 호환성을 위한 별칭
+ChunkBuffer = AdaptiveChunkBuffer 

@@ -299,3 +299,7 @@ async def update_user_settings(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="설정 업데이트 중 오류가 발생했습니다.",
         )
+
+
+# ✅ 완전 개선: 하드코딩된 온보딩 엔드포인트 제거
+# 모든 사용자는 동적 로그인/등록을 통해 API 키 발급 받음

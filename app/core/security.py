@@ -51,7 +51,7 @@ class APIKeyManager:
 
     def __init__(self):
         # 통일된 데이터 경로 사용 (프로젝트 루트 기준)
-        self.data_dir = Path(settings.get_absolute_data_dir)
+        self.data_dir = Path(settings.get_absolute_data_dir())
         self.api_keys_file = self.data_dir / "api_keys.json"
         self.rate_limits_file = self.data_dir / "rate_limits.json"
 
@@ -90,31 +90,13 @@ class APIKeyManager:
             self._create_initial_data()
 
     def _create_initial_data(self):
-        """초기 데이터 생성"""
-        if settings.ENABLE_DEMO_API_KEY:
-            # 환경변수에서 데모 키 읽기
-            demo_key = getattr(
-                settings,
-                "DEMO_API_KEY",
-                "hapa_demo_20241228_secure_key_for_testing")
-
-            demo_api_key = APIKeyModel(
-                api_key=demo_key,
-                user_id=settings.DEMO_USER_ID,
-                permissions=[
-                    "code_generation",
-                    "code_completion",
-                    "feedback",
-                    "history",
-                    "admin",
-                ],
-                created_at=datetime.now(),
-                expires_at=datetime.now()
-                + timedelta(days=settings.API_KEY_EXPIRY_DAYS),
-                is_active=True,
-            )
-            self._api_keys[demo_key] = demo_api_key
-            self._save_api_keys()
+        """✅ 완전 개선: 하드코딩 없는 동적 사용자 인증 시스템"""
+        # 모든 하드코딩 제거 - API 키는 실제 사용자 요청 시에만 동적 생성
+        if settings.DYNAMIC_USER_AUTH_ENABLED:
+            logger.info("🔒 동적 DB 기반 사용자 인증 시스템 활성화")
+            logger.info("📝 API 키는 실제 사용자 로그인/등록 시 동적으로 생성됩니다")
+        else:
+            logger.warning("⚠️ 동적 사용자 인증이 비활성화되어 있습니다")
 
     def _save_api_keys(self):
         """API Key 데이터 저장"""
@@ -209,6 +191,65 @@ class APIKeyManager:
 
         logger.info(f"새로운 API Key 생성 완료", user_id=user_id)
         return api_key
+
+    async def generate_api_key_for_db_user(self, email: str, username: str = None) -> Optional[str]:
+        """✅ 신규: 실제 DB 사용자를 위한 API 키 생성"""
+        try:
+            from app.services.user_service import UserService
+            
+            user_service = UserService()
+            
+            # DB에서 사용자 확인 또는 생성
+            user_data = await user_service.login_or_register(email, username)
+            
+            if user_data:
+                logger.info(f"DB 사용자 확인 완료: {email}")
+                
+                # 새로운 API 키 생성
+                api_key = self.generate_api_key(
+                    user_id=email,
+                    permissions=[
+                        "code_generation",
+                        "code_completion", 
+                        "feedback",
+                        "history"
+                    ]
+                )
+                
+                logger.info(f"실제 DB 사용자용 API 키 생성 완료: {email}")
+                return api_key
+            else:
+                logger.error(f"DB 사용자 생성/확인 실패: {email}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"DB 사용자용 API 키 생성 오류: {e}")
+            return None
+
+    async def get_user_api_key_by_email(self, email: str, username: str = None) -> Optional[str]:
+        """✅ 완전 개선: 이메일 기반 동적 API 키 조회/생성 (하드코딩 없음)"""
+        if not settings.DYNAMIC_USER_AUTH_ENABLED:
+            logger.warning("동적 사용자 인증이 비활성화되어 있습니다")
+            return None
+            
+        try:
+            # 기존 API 키 검색
+            for api_key, api_key_model in self._api_keys.items():
+                if api_key_model.user_id == email:
+                    if api_key_model.is_active and (
+                        not api_key_model.expires_at or 
+                        api_key_model.expires_at > datetime.now()
+                    ):
+                        logger.info(f"기존 사용자 API 키 사용: {email} - {api_key[:20]}...")
+                        return api_key
+            
+            # 새로운 API 키 생성 (실제 DB 사용자 확인 후)
+            logger.info(f"새 사용자 API 키 생성 시작: {email}")
+            return await self.generate_api_key_for_db_user(email, username)
+            
+        except Exception as e:
+            logger.error(f"사용자 API 키 조회/생성 오류: {e}")
+            return None
 
     def check_rate_limit(
             self,
@@ -332,26 +373,7 @@ def check_rate_limit_dependency(endpoint: str, limit: int):
     return rate_limit_checker
 
 
-def create_demo_api_key() -> Optional[Dict[str, Any]]:
-    """데모 API Key 생성 (개발 환경용)"""
-    if not settings.ENABLE_DEMO_API_KEY:
-        return None
-
-    # 환경변수에서 데모 키 읽기
-    demo_key = getattr(settings, "DEMO_API_KEY", None)
-    if not demo_key:
-        return None
-
-    return {
-        "api_key": demo_key,
-        "user_id": settings.DEMO_USER_ID,
-        "permissions": [
-            "code_generation",
-            "code_completion",
-            "feedback",
-            "history"],
-        "message": "개발 환경용 데모 API Key입니다.",
-    }
+# ✅ 완전 제거: create_demo_api_key 함수 삭제됨 (하드코딩 제거)
 
 
 # 보안 유틸리티 함수들
