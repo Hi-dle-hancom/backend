@@ -100,9 +100,7 @@ class ProductionLogger:
         if not data:
             return None
         return hashlib.sha256(
-            f"{data}{
-                self._privacy_salt}".encode()).hexdigest()[
-            :16]
+            f"{data}{self._privacy_salt}".encode()).hexdigest()[:16]
 
     def _parse_user_agent(self, user_agent: str) -> Dict[str, str]:
         """User-Agent 파싱"""
