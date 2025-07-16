@@ -49,3 +49,6 @@ asyncpg==0.29.0
 
 # JWT 토큰 처리
 PyJWT==2.8.0
+
+# User-Agent 파싱
+user-agents==2.2.0
