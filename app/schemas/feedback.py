@@ -2,7 +2,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 
 class FeedbackType(str, Enum):
@@ -35,8 +35,8 @@ class FeedbackRequest(BaseModel):
     user_agent: Optional[str] = Field(None, description="사용자 에이전트")
     platform: Optional[str] = Field(None, description="플랫폼 (vscode, web)")
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "feedback_type": "rating",
                 "session_id": "session_123",
@@ -47,6 +47,7 @@ class FeedbackRequest(BaseModel):
                 "platform": "vscode",
             }
         }
+    )
 
 
 class FeedbackResponse(BaseModel):
@@ -57,8 +58,8 @@ class FeedbackResponse(BaseModel):
     message: str = Field(..., description="응답 메시지")
     timestamp: datetime = Field(..., description="피드백 생성 시간")
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "success": True,
                 "feedback_id": "fb_001",
@@ -66,19 +67,20 @@ class FeedbackResponse(BaseModel):
                 "timestamp": "2025-01-10T10:30:00Z",
             }
         }
+    )
 
 
 class FeedbackStats(BaseModel):
     """피드백 통계 모델"""
 
-    total_feedback: int = Field(..., description="총 피드백 수")
-    like_count: int = Field(..., description="좋아요 수")
-    dislike_count: int = Field(..., description="싫어요 수")
-    average_rating: Optional[float] = Field(None, description="평균 별점")
-    comment_count: int = Field(..., description="코멘트 수")
+    total_feedback: int = Field(..., description="총 피드백 수", ge=0)
+    like_count: int = Field(..., description="좋아요 수", ge=0)
+    dislike_count: int = Field(..., description="싫어요 수", ge=0)
+    average_rating: Optional[float] = Field(None, description="평균 별점", ge=0.0, le=5.0)
+    comment_count: int = Field(..., description="코멘트 수", ge=0)
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "total_feedback": 150,
                 "like_count": 120,
@@ -87,6 +89,7 @@ class FeedbackStats(BaseModel):
                 "comment_count": 85,
             }
         }
+    )
 
 
 # 에러 응답 모델

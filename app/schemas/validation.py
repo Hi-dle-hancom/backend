@@ -2,7 +2,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 
 class ValidationStatus(str, Enum):
@@ -35,8 +35,8 @@ class ValidationIssue(BaseModel):
     suggestion: Optional[str] = Field(
         None, description="수정 제안", max_length=300)
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "line_number": 5,
                 "column_number": 12,
@@ -46,6 +46,7 @@ class ValidationIssue(BaseModel):
                 "suggestion": "함수 정의에서 콜론(:)이 누락되었습니다.",
             }
         }
+    )
 
 
 class CodeValidationRequest(BaseModel):
@@ -68,8 +69,8 @@ class CodeValidationRequest(BaseModel):
     context: Optional[str] = Field(
         None, description="코드 컨텍스트", max_length=2000)
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "code": "def hello_world():\n    print('Hello, World!')",
                 "language": "python",
@@ -79,6 +80,7 @@ class CodeValidationRequest(BaseModel):
                 "session_id": "session_123",
             }
         }
+    )
 
 
 class CodeValidationResponse(BaseModel):
@@ -110,8 +112,8 @@ class CodeValidationResponse(BaseModel):
     validation_time: float = Field(..., description="검증 소요 시간 (초)")
     timestamp: datetime = Field(..., description="검증 시간")
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "validation_id": "val_001",
                 "status": "valid",
@@ -129,6 +131,7 @@ class CodeValidationResponse(BaseModel):
                 "timestamp": "2025-01-10T10:30:00Z",
             }
         }
+    )
 
 
 class BatchValidationRequest(BaseModel):
@@ -140,8 +143,8 @@ class BatchValidationRequest(BaseModel):
     common_language: str = Field("python", description="공통 프로그래밍 언어")
     session_id: Optional[str] = Field(None, description="세션 ID")
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "code_snippets": [
                     {"id": "1", "code": "def func1(): pass"},
@@ -151,6 +154,7 @@ class BatchValidationRequest(BaseModel):
                 "session_id": "session_123",
             }
         }
+    )
 
 
 class BatchValidationResponse(BaseModel):
@@ -175,8 +179,8 @@ class ValidationStats(BaseModel):
     most_common_issues: List[str] = Field(..., description="가장 흔한 이슈 유형")
     language_distribution: Dict[str, int] = Field(..., description="언어별 검증 수")
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "total_validations": 500,
                 "valid_code_count": 450,
@@ -189,7 +193,9 @@ class ValidationStats(BaseModel):
                 "language_distribution": {
                     "python": 480,
                     "javascript": 20},
-            }}
+            }
+        }
+    )
 
 
 # 에러 응답 모델

@@ -16,11 +16,13 @@ from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 import aiohttp
 
 from app.core.config import settings
-from app.core.structured_logger import StructuredLogger
+
+import logging
+
 from app.schemas.code_generation import CodeGenerationRequest, CodeGenerationResponse
 from .adaptive_chunk_buffer import AdaptiveChunkBuffer, IntelligentStopTokenDetector, create_adaptive_system
 
-logger = StructuredLogger("vllm_integration")
+logger = logging.getLogger(__name__)
 
 
 # 🛡️ 코드 품질 검증 시스템 - 깨진 코드 방지
@@ -138,6 +140,27 @@ class CodeQualityValidator:
             issues.append(f"파싱 오류: {str(e)}")
             
         return issues
+    
+    async def check_health(self) -> Dict[str, Any]:
+        """호환성을 위한 check_health 메서드 (health_check의 확장 버전)"""
+        try:
+            is_healthy = await self.health_check()
+            return {
+                "status": "healthy" if is_healthy else "unhealthy",
+                "timestamp": time.time(),
+                "details": {
+                    "connected": self.is_connected,
+                    "total_requests": self.total_requests,
+                    "success_rate": self.successful_requests / max(self.total_requests, 1) * 100
+                }
+            }
+        except Exception as e:
+            logger.error(f"헬스 체크 오류: {e}")
+            return {
+                "status": "error",
+                "timestamp": time.time(),
+                "error": str(e)
+            }
     
     def suggest_fix(self, code: str, issues: List[str]) -> str:
         """간단한 자동 수정 제안"""
@@ -336,7 +359,7 @@ class VLLMIntegrationService:
 
     def __init__(self):
         """서비스 초기화"""
-        self.base_url = "http://localhost:8000"
+        self.base_url = settings.VLLM_SERVER_URL
         self.session: Optional[aiohttp.ClientSession] = None
         self.is_connected = False
         self.connection_retries = 0
@@ -421,14 +444,16 @@ Python 코드:
 
         # 사용자 개인화 정보가 있는 경우 적용
         if user_preferences:
-            # 개인화된 프롬프트 생성 (code_generation.py에서 정의한 함수 사용)
-            from app.api.endpoints.code_generation import build_personalized_prompt
-            personalized_prompt = build_personalized_prompt(base_prompt, user_preferences)
-            
-            logger.info(f"개인화된 프롬프트 적용됨: skill_level={user_preferences.get('skill_level', 'unknown')}")
-            return personalized_prompt
+            try:
+                # 런타임에만 import
+                from app.api.endpoints.code_generation import build_personalized_prompt
+                personalized_prompt = build_personalized_prompt(base_prompt, user_preferences)
+                logger.info(f"개인화된 프롬프트 적용됨: skill_level={user_preferences.get('skill_level', 'unknown')}")
+                return personalized_prompt
+            except ImportError as e:
+                logger.warning(f"개인화 모듈 import 실패, 기본 프롬프트 사용: {e}")
+                return base_prompt
         else:
-            logger.debug("개인화 정보 없음, 기본 프롬프트 사용")
             return base_prompt
 
     def _prepare_vllm_payload(self, request: CodeGenerationRequest, complexity, user_preferences: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -777,6 +802,56 @@ Python 코드:
                 "current_complexity": self.adaptive_buffer.current_complexity.value if self.adaptive_buffer.current_complexity else None,
             }
         }
+    
+    async def check_health(self) -> Dict[str, Any]:
+        """
+        호환성을 위한 check_health 메서드
+        기존 health_check() 메서드를 확장하여 더 상세한 정보 제공
+        """
+        try:
+            # 기존 health_check() 메서드 호출
+            is_healthy = await self.health_check()
+            
+            # 상세한 상태 정보 구성
+            status_info = {
+                "status": "healthy" if is_healthy else "unhealthy",
+                "timestamp": time.time(),
+                "details": {
+                    "connected": self.is_connected,
+                    "base_url": self.base_url,
+                    "total_requests": self.total_requests,
+                    "successful_requests": self.successful_requests,
+                    "failed_requests": self.failed_requests,
+                    "connection_retries": self.connection_retries,
+                    "max_retries": self.max_retries
+                },
+                "performance": {
+                    "success_rate": (
+                        self.successful_requests / max(self.total_requests, 1) * 100
+                    ),
+                    "avg_response_time": self.avg_response_time
+                }
+            }
+            
+            if is_healthy:
+                logger.debug("vLLM 서버 상태 확인 완료: 정상")
+            else:
+                logger.warning("vLLM 서버 상태 확인 완료: 비정상")
+                
+            return status_info
+            
+        except Exception as e:
+            logger.error(f"vLLM 헬스 체크 오류: {e}")
+            return {
+                "status": "error",
+                "timestamp": time.time(),
+                "error": str(e),
+                "details": {
+                    "connected": False,
+                    "base_url": self.base_url,
+                    "connection_retries": self.connection_retries
+                }
+            }
 
     async def health_check(self) -> bool:
         """헬스 체크"""
@@ -792,3 +867,6 @@ Python 코드:
 
 # 호환성을 위한 별칭
 ChunkBuffer = AdaptiveChunkBuffer 
+
+# 전역 서비스 인스턴스
+vllm_service = VLLMIntegrationService()

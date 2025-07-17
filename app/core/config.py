@@ -2,7 +2,7 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
-from pydantic import Field, validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
 
 # 로깅 설정
@@ -254,9 +254,11 @@ class Settings(BaseSettings):
         
         # Docker 환경 감지 (여러 방법으로 확인)
         is_docker = (
-            os.path.exists('/.dockerenv') or  # Docker 컨테이너 내부 파일
-            os.environ.get('DOCKER_ENV') == 'true' or  # 환경 변수
-            '/app' in str(Path.cwd())  # 작업 디렉토리가 /app으로 시작하는지 확인
+            os.path.exists('/.dockerenv') or
+            os.environ.get('DOCKER_ENV') == 'true' or
+            os.environ.get('RUNNING_IN_DOCKER') == 'true' or
+            '/app' in str(Path.cwd()) or
+            Path.cwd() == Path('/app')  # 정확한 경로 매칭
         )
         
         if is_docker:
@@ -332,7 +334,8 @@ class Settings(BaseSettings):
         else:
             return "DEBUG" if self.should_log_debug() else "INFO"
 
-    @validator("ALLOWED_IPS")
+    @field_validator("ALLOWED_IPS")
+    @classmethod
     def validate_allowed_ips(cls, v):
         """허용된 IP 목록 검증"""
         if not v:
@@ -348,7 +351,8 @@ class Settings(BaseSettings):
                 raise ValueError(f"유효하지 않은 IP 주소: {ip}")
         return v
 
-    @validator("API_KEY_MIN_LENGTH")
+    @field_validator("API_KEY_MIN_LENGTH")
+    @classmethod
     def validate_api_key_length(cls, v):
         """API 키 최소 길이 검증"""
         if v < 16:
@@ -357,7 +361,8 @@ class Settings(BaseSettings):
             raise ValueError("API 키 최대 길이는 128자 이하여야 합니다")
         return v
 
-    @validator("HSTS_MAX_AGE")
+    @field_validator("HSTS_MAX_AGE")
+    @classmethod
     def validate_hsts_max_age(cls, v):
         """HSTS 최대 연령 검증"""
         if v < 300:  # 5분
@@ -370,7 +375,8 @@ class Settings(BaseSettings):
         "env_file": [".env.production", ".env"],
         "env_file_encoding": "utf-8",
         "case_sensitive": True,
-        "extra": "ignore"  # 🆕 추가: 정의되지 않은 필드 무시 
+        "extra": "allow"  # 🆕 수정: 정의되지 않은 필드 허용으로 변경
+      
     }
 
     def get_cors_origins(self) -> List[str]:
@@ -540,4 +546,4 @@ except Exception as e:
     # .env 파일이 없어도 기본값으로 설정 인스턴스 생성
     logger.warning(f".env 파일을 찾을 수 없거나 로드하는 중 오류 발생: {e}")
     logger.info("기본 설정값을 사용합니다.")
-    settings =Settings()
+    settings = Settings()

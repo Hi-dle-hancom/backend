@@ -31,7 +31,8 @@ from app.schemas.code_generation import (
     StreamingChunk,
     VLLMHealthStatus,
 )
-from app.services.vllm_integration_service import VLLMModelType, vllm_service
+from app.services.optimized_vllm_service import VLLMModelType
+from app.services.vllm_integration_service import vllm_service
 from app.services.performance_profiler import ai_performance_metrics
 
 logger = logging.getLogger(__name__)

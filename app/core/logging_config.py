@@ -57,7 +57,10 @@ class StructuredLogger:
 
         # 파일 핸들러 추가 (프로덕션 환경)
         if not settings.DEBUG:
-            log_dir = Path("logs")
+            if os.path.exists('/.dockerenv'):
+                log_dir = Path("/app/logs")
+            else:
+                log_dir = Path("logs")
             log_dir.mkdir(exist_ok=True)
 
             file_handler = logging.FileHandler(

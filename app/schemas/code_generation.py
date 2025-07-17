@@ -2,7 +2,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, Field, field_validator, root_validator, validator
+from pydantic import BaseModel, Field, field_validator, root_validator
 
 
 class PythonSkillLevel(str, Enum):
@@ -255,21 +255,24 @@ class CodeGenerationRequest(BaseModel):
         default="", description="프로젝트 컨텍스트 정보", max_length=500
     )
 
-    @validator("prompt")
+    @field_validator("prompt")
+    @classmethod
     def validate_prompt(cls, v):
         """프롬프트 검증"""
         if not v or not v.strip():
             raise ValueError("프롬프트는 비어있을 수 없습니다")
         return v.strip()
 
-    @validator("context")
+    @field_validator("context")
+    @classmethod
     def validate_context(cls, v):
         """컨텍스트 검증"""
         if v is None:
             return ""
         return v.strip()
 
-    @validator("language")
+    @field_validator("language")
+    @classmethod
     def validate_language(cls, v):
         """언어 검증"""
         if v and v.lower() not in ["python", "py"]:
@@ -443,7 +446,8 @@ class CodeValidationRequest(BaseModel):
     security_check: bool = Field(True, description="보안 검사 수행 여부")
     performance_check: bool = Field(True, description="성능 검사 수행 여부")
 
-    @validator("code")
+    @field_validator("code")
+    @classmethod
     def validate_code_content(cls, v):
         """코드 내용 기본 검증"""
         if not v or v.strip() == "":
@@ -528,7 +532,7 @@ class CompletionRequest(BaseModel):
         description="완성 타입 (인라인/블록/함수 단위)"
     )
     
-    @validator("prefix")
+    @field_validator("prefix")
     @classmethod
     def validate_prefix(cls, v):
         if len(v.strip()) == 0:
