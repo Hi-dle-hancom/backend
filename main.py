@@ -1,6 +1,6 @@
 """
 HAPA (Hancom AI Python Assistant) Backend
-메인 애플리케이션 엔트리 포인트
+메인 애플리케이션 Entry Point
 - vLLM 멀티 LoRA 서버 통합
 - Enhanced AI 모델 서비스 지원
 - 실시간 스트리밍 코드 생성
