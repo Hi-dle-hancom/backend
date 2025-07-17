@@ -302,7 +302,7 @@ class HAPASettings(BaseSettings):
     @property
     def monitoring(self) -> MonitoringSettings:
         return MonitoringSettings()
-
+    
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._log_startup_info()
@@ -424,6 +424,6 @@ def get_settings() -> HAPASettings:
         get_settings._instance = HAPASettings()
     return get_settings._instance
 
-
+  
 # 호환성을 위한 별칭
 hapa_settings = get_settings()
