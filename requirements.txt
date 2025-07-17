@@ -52,3 +52,5 @@ PyJWT==2.8.0
 
 # User-Agent 파싱
 user-agents==2.2.0
+
+email_validator==2.1.0
