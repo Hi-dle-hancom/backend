@@ -47,7 +47,7 @@ class UserService:
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.get(
-                    f"{self.db_module_url}/users/me/settings",
+                    f"{self.db_module_url}/settings/me",
                     headers={"Authorization": f"Bearer {access_token}"},
                 )
 

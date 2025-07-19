@@ -56,7 +56,7 @@ async def create_session(
             f"새 세션 생성 요청: {request.session_title} (사용자: {api_key.user_id})"
         )
 
-        session = history_service.create_session(
+        session = await history_service.create_session(
             request, user_id=api_key.user_id)
 
         logger.info(f"세션 생성 완료: {session.session_id} (사용자: {api_key.user_id})")
@@ -93,7 +93,7 @@ async def add_history_entry(
     try:
         logger.info(f"히스토리 엔트리 추가 요청: {request.session_id} - {request.conversation_type} (사용자: {api_key.user_id})")
 
-        response = history_service.add_entry(request, user_id=api_key.user_id)
+        response = await history_service.add_entry(request, user_id=api_key.user_id)
 
         logger.info(
             f"히스토리 엔트리 추가 완료: {response.entry_id} (사용자: {api_key.user_id})"
@@ -133,7 +133,7 @@ async def get_session_history(
             f"세션별 히스토리 조회 요청: {session_id} (사용자: {api_key.user_id})"
         )
 
-        history = history_service.get_session_history(
+        history = await history_service.get_session_history(
             session_id, limit, user_id=api_key.user_id
         )
 
@@ -169,7 +169,7 @@ async def get_recent_sessions(
     try:
         logger.info(f"최근 세션 목록 조회 요청: {limit}개 (사용자: {api_key.user_id})")
 
-        sessions = history_service.get_recent_sessions(
+        sessions = await history_service.get_recent_sessions(
             limit, user_id=api_key.user_id)
 
         logger.info(
@@ -206,7 +206,7 @@ async def search_history(
     try:
         logger.info(f"히스토리 검색 요청: {request.query} (사용자: {api_key.user_id})")
 
-        results = history_service.search_history(
+        results = await history_service.search_history(
             request, user_id=api_key.user_id)
 
         logger.info(
@@ -245,7 +245,7 @@ async def get_history_stats(
     try:
         logger.info(f"히스토리 통계 조회 요청 (사용자: {api_key.user_id})")
 
-        stats = history_service.get_stats(user_id=api_key.user_id)
+        stats = await history_service.get_stats(user_id=api_key.user_id)
 
         logger.info(f"히스토리 통계 조회 성공: 총 {stats.total_sessions}개 세션 (사용자: {api_key.user_id})")
         return stats
@@ -277,7 +277,7 @@ async def delete_session(
     try:
         logger.info(f"세션 삭제 요청: {session_id} (사용자: {api_key.user_id})")
 
-        success = history_service.delete_session(
+        success = await history_service.delete_session(
             session_id, user_id=api_key.user_id)
 
         if not success:
@@ -429,7 +429,7 @@ async def health_check() -> Dict[str, Any]:
     """
     try:
         # 히스토리 통계로 서비스 상태 확인 (익명)
-        stats = history_service.get_health_stats()
+        stats = await history_service.get_health_stats()
 
         return {
             "status": "healthy",
