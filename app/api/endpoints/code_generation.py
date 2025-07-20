@@ -92,7 +92,7 @@ async def fetch_user_settings_from_db(user_id: str) -> Optional[Dict[str, Any]]:
         # DB-Module에서 사용자 설정 조회
         async with httpx.AsyncClient() as client:
             response = await client.get(
-                f"{db_module_url}/settings/options",
+                f"{db_module_url}/settings/me",
                 headers={"Authorization": f"Bearer {user_id}"},  # 임시: user_id를 토큰으로 사용
                 timeout=timeout
             )
