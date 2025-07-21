@@ -93,7 +93,16 @@ class SecuritySettings(BaseSettings):
     )
 
     secret_key: str = Field(default="hapa_dev_secret_key_not_for_production", env="SECRET_KEY")
-    jwt_secret_key: str = Field(default="hapa_jwt_secret_key_dev_only", env="JWT_SECRET_KEY")
+    jwt_secret_key: str = Field(default="", env="JWT_SECRET_KEY")
+    
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        # 보안 강화된 JWT 키 로드
+        if not self.jwt_secret_key:
+            from .secure_jwt_config import backend_jwt_config
+            self.jwt_secret_key = backend_jwt_config.get_jwt_secret_key()
+            # DB Module과 동기화 확인
+            backend_jwt_config.validate_sync_with_db_module()
     api_key: str = Field(default="hapa_api_key_development_only", env="API_KEY")
 
     # CORS 설정

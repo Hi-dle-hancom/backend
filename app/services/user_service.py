@@ -123,7 +123,9 @@ class UserService:
                     logger.info("사용자 정보 조회 성공")
                     return data
                 else:
-                    logger.error(f"사용자 정보 조회 실패: {response.status_code}")
+                    logger.error(f"사용자 정보 조회 실패: {response.status_code} - {response.text}")
+                    logger.error(f"요청 URL: {self.db_module_url}/users/me")
+                    logger.error(f"Authorization 헤더: Bearer {access_token[:20]}...")
                     return None
 
         except httpx.RequestError as e:

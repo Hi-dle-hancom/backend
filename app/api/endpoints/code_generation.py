@@ -56,7 +56,7 @@ async def decode_jwt_and_get_user_id(access_token: str) -> Optional[str]:
     """JWT 토큰에서 사용자 ID 추출"""
     try:
         # JWT 시크릿 키 가져오기 (환경변수 또는 설정에서)
-        secret_key = getattr(settings, 'JWT_SECRET_KEY', 'default_secret')
+        secret_key = settings.security.jwt_secret_key
         
         # JWT 토큰 디코딩
         payload = jwt.decode(access_token, secret_key, algorithms=["HS256"])
