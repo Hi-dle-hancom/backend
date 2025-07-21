@@ -17,6 +17,44 @@ import logging
 from app.services.token_blacklist_service import token_blacklist_service
 from app.services.user_service import UserService
 
+# 보안 설정
+security_bearer = HTTPBearer(auto_error=False)
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+logger = StructuredLogger("security")
+
+# 🔐 JWT 보안 설정 초기화 및 검증
+def validate_jwt_configuration():
+    """Backend의 JWT 설정을 검증하고 로그에 출력"""
+    jwt_key = settings.JWT_SECRET_KEY
+    environment = settings.ENVIRONMENT
+    
+    logger.info(f"🔐 Backend JWT 설정 초기화")
+    logger.info(f"🔍 환경: {environment}")
+    logger.info(f"🔍 JWT_SECRET_KEY 길이: {len(jwt_key)}")
+    logger.info(f"🔍 JWT_SECRET_KEY prefix: {jwt_key[:20]}...")
+    
+    if environment == "production" and len(jwt_key) < 32:
+        logger.error(f"🚨 [PRODUCTION] JWT_SECRET_KEY가 너무 짧습니다! 현재: {len(jwt_key)}자, 최소: 32자")
+        raise ValueError(f"Production 환경에서 JWT_SECRET_KEY는 최소 32자 이상이어야 합니다.")
+    
+    if jwt_key == "HAPA_UNIFIED_SECRET_KEY_FOR_DEVELOPMENT_ONLY_CHANGE_IN_PRODUCTION_32CHARS":
+        if environment == "production":
+            logger.error("🚨 [PRODUCTION] 기본 개발용 JWT_SECRET_KEY를 사용 중입니다!")
+            raise ValueError("Production 환경에서는 고유한 JWT_SECRET_KEY를 사용해야 합니다.")
+        else:
+            logger.warning("⚠️ [DEVELOPMENT] 기본 개발용 JWT_SECRET_KEY 사용 중")
+    
+    logger.info("✅ Backend JWT 설정 검증 완료")
+
+# JWT 설정 검증 실행
+try:
+    validate_jwt_configuration()
+except Exception as e:
+    logger.error(f"❌ Backend JWT 설정 검증 실패: {e}")
+    if settings.ENVIRONMENT == "production":
+        raise
+
 # 토큰 블랙리스트 서비스 통합
 try:
     from app.services.token_blacklist_service import token_blacklist_service
@@ -26,12 +64,6 @@ except ImportError:
     import logging
     logging.getLogger(__name__).warning("토큰 블랙리스트 서비스를 찾을 수 없습니다. 기본 보안 기능으로 작동합니다.")
     BLACKLIST_ENABLED = False
-
-# 보안 설정
-security_bearer = HTTPBearer(auto_error=False)
-api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
-
-logger = StructuredLogger("security")
 
 
 class APIKeyModel(BaseModel):
@@ -296,24 +328,41 @@ def get_api_key_manager():
         get_api_key_manager._instance = APIKeyManager()
     return get_api_key_manager._instance
 
+# 전역 API Key Manager 인스턴스
+api_key_manager = get_api_key_manager()
+
 
 async def verify_jwt_token_with_db(jwt_token: str) -> Optional[Dict[str, Any]]:
     """
     JWT 토큰을 DB 모듈에 전달하여 검증
+    🔐 디버깅: Backend와 DB Module의 JWT 키 동기화 확인
     """
     try:
+        # 🔍 디버깅: Backend JWT 설정 로그
+        logger.info(f"🔍 Backend JWT 검증 시작")
+        logger.info(f"🔍 Backend JWT_SECRET_KEY 길이: {len(settings.JWT_SECRET_KEY)}")
+        logger.info(f"🔍 Backend JWT_SECRET_KEY prefix: {settings.JWT_SECRET_KEY[:20]}...")
+        logger.info(f"🔍 검증할 토큰 길이: {len(jwt_token)}")
+        logger.info(f"🔍 검증할 토큰 prefix: {jwt_token[:50]}...")
+        
         user_service = UserService()
         user_info = await user_service.get_user_info(jwt_token)
         
         if user_info:
-            logger.info(f"JWT 토큰 검증 성공: {user_info.get('email', 'unknown')}")
+            logger.info(f"✅ Backend JWT 토큰 검증 성공: {user_info.get('email', 'unknown')}")
             return user_info
         else:
-            logger.warning("JWT 토큰 검증 실패: DB 모듈에서 거부")
+            logger.error("❌ Backend JWT 토큰 검증 실패: DB Module에서 거부")
+            logger.error("❌ 가능한 원인:")
+            logger.error("   - Backend와 DB Module의 JWT_SECRET_KEY 불일치")
+            logger.error("   - 토큰 만료")
+            logger.error("   - 사용자가 DB에 존재하지 않음")
+            logger.error("   - DB Module 서비스 오류")
             return None
             
     except Exception as e:
-        logger.error(f"JWT 토큰 검증 중 오류: {e}")
+        logger.error(f"❌ Backend JWT 토큰 검증 중 예외 발생: {e}")
+        logger.error(f"❌ 예외 타입: {type(e).__name__}")
         return None
 
 

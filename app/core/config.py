@@ -47,6 +47,14 @@ class Settings(BaseSettings):
 
     # 보안 설정
     SECRET_KEY: str = Field(default="", env="SECRET_KEY")
+    
+    # 🔐 JWT 보안 설정 (DB Module과 동기화)
+    JWT_SECRET_KEY: str = Field(
+        default="HAPA_UNIFIED_SECRET_KEY_FOR_DEVELOPMENT_ONLY_CHANGE_IN_PRODUCTION_32CHARS",
+        env="JWT_SECRET_KEY",
+        description="JWT 토큰 암호화/복호화용 비밀키 (DB Module과 반드시 동일해야 함)"
+    )
+    
     API_KEY_EXPIRY_DAYS: int = 365
 
     # 로깅 설정 (환경별 차별화)
