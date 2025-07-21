@@ -29,15 +29,6 @@ class DatabaseSettings(BaseSettings):
     pool_size: int = Field(10, env="DATABASE_POOL_SIZE")
     max_overflow: int = Field(20, env="DATABASE_MAX_OVERFLOW")
 
-    @field_validator("url", mode='after')
-    @classmethod
-    def validate_database_url(cls, v):
-        if not v or not v.strip():
-            raise ValueError("DATABASE_URL은 필수 설정입니다.")
-        if not v.startswith(('postgresql://', 'sqlite://', 'mysql://')):
-            raise ValueError("지원되지 않는 데이터베이스 URL 형식입니다.")
-        return v
-
 
 class RedisSettings(BaseSettings):
     """Redis 설정"""
@@ -48,7 +39,7 @@ class RedisSettings(BaseSettings):
         extra="ignore"
     )
     
-    url: str = Field("redis://localhost:6379", env="REDIS_URL")
+    url: str = Field("redis://redis:6379", env="REDIS_URL")
     password: Optional[str] = Field(None, env="REDIS_PASSWORD")
     db: int = Field(0, env="REDIS_DB")
 

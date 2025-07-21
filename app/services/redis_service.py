@@ -17,18 +17,18 @@ class RedisService:
 
     def __init__(self):
         # 환경변수에서 Redis URL 읽기, 기본값은 로컬 Redis
-        self.redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
+        self.redis_url = os.getenv("REDIS_URL", "redis://redis:6379")
         self.client: Optional[redis.Redis] = None
         self.connected = False
         self.default_ttl = settings.CACHE_TTL
 
         # 개발/프로덕션 환경별 Redis URL 설정
-        if settings.ENVIRONMENT == "development":
-            self.redis_url = "redis://localhost:6379"  # 로컬 개발 환경
-        elif settings.ENVIRONMENT == "production":
-            self.redis_url = os.getenv(
-                "REDIS_URL", "redis://localhost:6379"
-            )  # EC2 로컬 Redis 서버
+        #if settings.ENVIRONMENT == "development":
+        #    self.redis_url = "redis://localhost:6379"  # 로컬 개발 환경
+        #elif settings.ENVIRONMENT == "production":
+        #    self.redis_url = os.getenv(
+        #        "REDIS_URL", "redis://localhost:6379"
+        #    )  # EC2 로컬 Redis 서버
 
         logger.info(f"Redis 설정: {self.redis_url} (환경: {settings.ENVIRONMENT})")
 
