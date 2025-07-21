@@ -2,6 +2,7 @@ import json
 import logging
 from datetime import datetime, timedelta
 from typing import Optional, Set
+import os
 
 import redis
 
@@ -15,12 +16,27 @@ class TokenBlacklistService:
 
     def __init__(self):
         try:
-            self.redis_client = redis.Redis(
-                host=getattr(settings, 'REDIS_HOST', 'localhost'),
-                port=getattr(settings, 'REDIS_PORT', 6379),
-                db=getattr(settings, 'REDIS_DB', 0),
-                decode_responses=True
-            )
+            # ✅ 하드코딩 제거: Docker 환경 고려한 Redis 연결
+            redis_url = os.getenv("REDIS_URL", "redis://redis:6379")
+            
+            # Redis URL 파싱하여 연결
+            if redis_url.startswith("redis://"):
+                import urllib.parse
+                parsed = urllib.parse.urlparse(redis_url)
+                self.redis_client = redis.Redis(
+                    host=parsed.hostname or 'redis',
+                    port=parsed.port or 6379,
+                    db=0,
+                    decode_responses=True
+                )
+            else:
+                # 기존 방식 (fallback)
+                self.redis_client = redis.Redis(
+                    host=os.getenv('REDIS_HOST', 'redis'),
+                    port=int(os.getenv('REDIS_PORT', '6379')),
+                    db=int(os.getenv('REDIS_DB', '0')),
+                    decode_responses=True
+                )
             # Redis 연결 테스트
             self.redis_client.ping()
             self.use_redis = True
