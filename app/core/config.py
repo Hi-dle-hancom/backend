@@ -384,7 +384,7 @@ class Settings(BaseSettings):
         "env_file_encoding": "utf-8",
         "case_sensitive": True,
         "extra": "allow"  # 🆕 수정: 정의되지 않은 필드 허용으로 변경
-
+      
     }
 
     def get_cors_origins(self) -> List[str]:
