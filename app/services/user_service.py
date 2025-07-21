@@ -112,24 +112,49 @@ class UserService:
     async def get_user_info(self, access_token: str) -> Optional[Dict[str, Any]]:
         """현재 사용자 정보 조회"""
         try:
+            logger.info(f"🔍 Backend → DB Module 사용자 정보 조회 시작")
+            logger.info(f"🔍 DB_MODULE_URL: {self.db_module_url}")
+            logger.info(f"🔍 Access Token 길이: {len(access_token)}")
+            logger.info(f"🔍 Access Token prefix: {access_token[:50]}...")
+            
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.get(
                     f"{self.db_module_url}/users/me",
                     headers={"Authorization": f"Bearer {access_token}"},
                 )
 
+                logger.info(f"🔍 DB Module 응답 상태코드: {response.status_code}")
+                logger.info(f"🔍 DB Module 응답 헤더: {dict(response.headers)}")
+                
                 if response.status_code == 200:
                     data = response.json()
-                    logger.info("사용자 정보 조회 성공")
+                    logger.info("✅ 사용자 정보 조회 성공")
+                    logger.info(f"🔍 응답 데이터: {data}")
                     return data
                 else:
-                    logger.error(f"사용자 정보 조회 실패: {response.status_code} - {response.text}")
-                    logger.error(f"요청 URL: {self.db_module_url}/users/me")
-                    logger.error(f"Authorization 헤더: Bearer {access_token[:20]}...")
+                    logger.error(f"❌ 사용자 정보 조회 실패: {response.status_code}")
+                    logger.error(f"❌ 응답 본문: {response.text}")
+                    logger.error(f"❌ 요청 URL: {self.db_module_url}/users/me")
+                    logger.error(f"❌ Authorization 헤더: Bearer {access_token[:20]}...")
+                    
+                    # HTTP 상태코드별 상세 디버깅
+                    if response.status_code == 401:
+                        logger.error("❌ 401 Unauthorized - JWT 토큰 검증 실패")
+                        logger.error("❌ 가능한 원인:")
+                        logger.error("   - JWT 토큰이 만료됨")
+                        logger.error("   - JWT SECRET_KEY 불일치")
+                        logger.error("   - 토큰 형식 오류")
+                        logger.error("   - 사용자가 데이터베이스에 존재하지 않음")
+                    elif response.status_code == 422:
+                        logger.error("❌ 422 Validation Error - 요청 형식 오류")
+                    elif response.status_code == 500:
+                        logger.error("❌ 500 Internal Server Error - DB Module 내부 오류")
+                    
                     return None
 
         except httpx.RequestError as e:
-            logger.error(f"사용자 정보 조회 중 오류: {e}")
+            logger.error(f"❌ 사용자 정보 조회 중 네트워크 오류: {e}")
+            logger.error(f"❌ 오류 타입: {type(e).__name__}")
             return None
 
     async def save_user_profile(

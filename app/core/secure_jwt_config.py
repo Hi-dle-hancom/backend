@@ -59,23 +59,19 @@ class BackendJWTConfig:
         return default_key
     
     def validate_sync_with_db_module(self) -> bool:
-        """DB Module과 JWT 키 동기화 확인"""
+        """DB Module과 JWT 키 동기화 확인 (Docker 환경 대응)"""
         try:
             backend_key = self.get_jwt_secret_key()
             
-            # DB Module 설정 파일 확인
-            db_module_auth_file = self.project_root / "DB-Module" / "secure_jwt_manager.py"
-            if not db_module_auth_file.exists():
-                logger.warning("⚠️ DB Module JWT 관리자 파일을 찾을 수 없습니다")
-                return False
-            
-            # 환경변수 동기화 확인
+            # Docker 환경에서는 환경변수로만 동기화 확인
             db_env_key = os.getenv("JWT_SECRET_KEY")
             if backend_key == db_env_key:
-                logger.info("✅ Backend-DB Module JWT 키 동기화 확인됨")
+                logger.info("✅ Backend-DB Module JWT 키 동기화 확인됨 (환경변수)")
                 return True
             else:
-                logger.warning("⚠️ Backend-DB Module JWT 키가 동기화되지 않을 수 있습니다")
+                logger.warning(f"⚠️ Backend-DB Module JWT 키 불일치 감지")
+                logger.warning(f"Backend 키 길이: {len(backend_key) if backend_key else 0}")
+                logger.warning(f"환경변수 키 길이: {len(db_env_key) if db_env_key else 0}")
                 return False
                 
         except Exception as e:
