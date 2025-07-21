@@ -83,7 +83,7 @@ class Settings(BaseSettings):
     MAX_WORKERS: int = 4  # 최대 워커 수
 
     # Redis 설정
-    REDIS_URL: str = "redis://localhost:6379"
+    REDIS_URL: str = "redis://redis:6379"
     REDIS_PASSWORD: Optional[str] = None
     REDIS_DB: int = 0
     REDIS_TIMEOUT: int = 5  # Redis 연결 타임아웃 (초)
@@ -147,7 +147,7 @@ class Settings(BaseSettings):
     BACKUP_RETENTION_DAYS: int = 30
 
     # DB Module 마이크로서비스 설정
-    DB_MODULE_URL: str = "http://3.13.240.111:8001"
+    DB_MODULE_URL: str = "http://hapa-db-module:8001"
     DB_MODULE_TIMEOUT: int = 10
 
     # 온보딩 테스트 설정 (선택적)
