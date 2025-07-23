@@ -418,7 +418,15 @@ class VLLMIntegrationService:
         
             self.session = aiohttp.ClientSession(
                 timeout=timeout,
-                connector=connector
+                connector=connector,
+                headers={
+                    "User-Agent": "HAPA-Backend/1.0",
+                    "Accept": "text/event-stream, application/json",
+                    "Cache-Control": "no-cache"
+                },
+                # Transfer-Encoding 오류 방지를 위한 설정
+                auto_decompress=True,
+                read_bufsize=8192  # 버퍼 크기 설정
             )
         
         try:
@@ -566,24 +574,19 @@ Python 코드:
         user_preferences: Optional[Dict[str, Any]] = None,
         chunk_callback: Optional[callable] = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
-        """적응형 스트리밍 코드 생성 (개인화 정보 반영)"""
+        """간소화된 스트리밍 코드 생성"""
         
-        start_time = time.time()
-        self.total_requests += 1
-        accumulated_content = ""  # 전체 응답 누적
+        logger.info(f"스트리밍 요청 시작: {request.prompt[:50]}...")
         
         try:
-            # 적응형 버퍼 설정
-            complexity = self.adaptive_buffer.configure_for_request(
-                request.prompt, 
-                request.context
-            )
-            
-            # 개인화된 요청 준비
-            payload = self._prepare_vllm_payload(request, complexity, user_id, user_preferences)
-            
-            personalization_info = f"(개인화: {bool(user_preferences)})" if user_preferences else "(기본 모드)"
-            logger.info(f"구조화된 스트리밍 요청 시작 {personalization_info} (복잡도: {complexity.value})")
+            # 기본 요청 준비
+            payload = {
+                "prompt": request.prompt,
+                "model_type": request.model_type,
+                "max_tokens": request.max_tokens or 512,
+                "temperature": request.temperature or 0.7,
+                "top_p": request.top_p or 0.9
+            }
             
             if not self.is_connected:
                 await self.connect()
@@ -591,135 +594,76 @@ Python 코드:
             async with self.session.post(
                 f"{self.base_url}/generate/stream",
                 json=payload,
-                headers={"Content-Type": "application/json"}
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "text/event-stream",
+                    "Cache-Control": "no-cache"
+                },
+                timeout=aiohttp.ClientTimeout(total=300)
             ) as response:
 
                 if response.status != 200:
                     error_text = await response.text()
-                    raise aiohttp.ClientError(f"vLLM API 오류 {response.status}: {error_text}")
+                    logger.error(f"vLLM API 오류: {response.status} - {error_text}")
+                    yield {
+                        "type": "error",
+                        "content": f"API 오류: {response.status}",
+                        "is_complete": True
+                    }
+                    return
 
                 async for line in response.content:
-                    line_text = line.decode('utf-8').strip()
+                    try:
+                        line_text = line.decode('utf-8').strip()
+                    except UnicodeDecodeError:
+                        continue
 
                     if not line_text or not line_text.startswith('data: '):
-                            continue
+                        continue
 
+                    # 완료 신호 처리
                     if line_text == 'data: [DONE]':
-                        # 최종 응답 분리 및 전송
-                        if accumulated_content.strip():
-                            parsed_response = response_parser.parse_response(accumulated_content)
-                            
-                            # 설명 청크 전송
-                            if parsed_response["explanation"]:
-                                yield {
-                                    "type": "explanation",
-                                    "content": parsed_response["explanation"],
-                                    "is_complete": False,
-                                    "metadata": {
-                                        "chunk_type": "explanation",
-                                        "complexity": complexity.value,
-                                        "personalized": bool(user_preferences)
-                                    }
-                                }
-                            
-                            # 코드 청크 전송
-                            if parsed_response["code"]:
-                                yield {
-                                    "type": "code",
-                                    "content": parsed_response["code"],
-                                    "is_complete": False,
-                                    "metadata": {
-                                        "chunk_type": "code",
-                                        "complexity": complexity.value,
-                                        "parsing_confidence": parsed_response["metadata"]["parsing_confidence"],
-                                        "personalized": bool(user_preferences),
-                                        "user_preferences": user_preferences if user_preferences else {}
-                                    }
-                                }
-                            
-                            # 완료 신호
-                            yield {
-                                "type": "done",
-                                "content": "",
-                                "is_complete": True,
-                                "metadata": {
-                                    **self.adaptive_buffer.get_metrics(),
-                                    **parsed_response["metadata"],
-                                    "personalized": bool(user_preferences),
-                                    "personalization_applied": user_preferences if user_preferences else None
-                                }
-                            }
+                        logger.info("스트림 완료: [DONE]")
                         break
-                    
-                    # vLLM 서버 응답 형식에 맞게 JSON 파싱 수정
-                    try:
-                        json_data = json.loads(line_text[6:])  # 'data: ' 제거
                         
-                        # vLLM 서버 응답 형식: {"text": "내용"}
-                        if 'text' in json_data:
-                            content = json_data['text']
-                            accumulated_content += content  # 전체 응답에 누적
+                    # JSON 데이터 처리
+                    try:
+                        data_part = line_text[6:]  # 'data: ' 제거
+                        parsed_data = json.loads(data_part)
+                        
+                        if parsed_data.get('type') == 'done':
+                            logger.info("스트림 완료: JSON done")
+                            break
+                        
+                        # 텍스트 데이터 전송
+                        if 'text' in parsed_data and parsed_data['text']:
+                            content = parsed_data['text']
+                            logger.debug(f"수신: '{content[:30]}...'")
+                            yield {
+                                "type": "token",
+                                "content": content,
+                                "is_complete": False
+                            }
                             
-                            # 적응형 버퍼에 추가
-                            ready_chunks = self.adaptive_buffer.add_chunk(content)
-                            
-                            # 실시간 청크 전송 (개인화 메타데이터 포함)
-                            for chunk in ready_chunks:
-                                if chunk.strip():
-                                    # Stop token 감지
-                                    should_stop, reason = self.stop_detector.should_stop(
-                                        chunk, 
-                                        {'request_type': complexity.value}
-                                    )
-                                    
-                                    if should_stop:
-                                        logger.info(f"Stop token 감지: {reason}")
-                                        # 조기 종료 시에도 응답 분리 적용
-                                        if accumulated_content.strip():
-                                            parsed_response = response_parser.parse_response(accumulated_content)
-                                            
-                                            if parsed_response["explanation"]:
-                                                yield {
-                                                    "type": "explanation",
-                                                    "content": parsed_response["explanation"],
-                                                    "is_complete": True,
-                                                    "stop_reason": reason,
-                                                    "personalized": bool(user_preferences)
-                                                }
-                                            
-                                            if parsed_response["code"]:
-                                                yield {
-                                                    "type": "code",
-                                                    "content": parsed_response["code"],
-                                                    "is_complete": True,
-                                                    "stop_reason": reason,
-                                                    "personalized": bool(user_preferences)
-                                                }
-                                        return
-                                    
-                                    # 일반 실시간 청크 전송 (개인화 메타데이터 포함)
-                                    yield {
-                                        "type": "token",
-                                        "content": chunk,
-                                        "is_complete": False,
-                                        "metadata": {
-                                            "complexity": complexity.value,
-                                            "chunk_size": len(chunk),
-                                            "is_preview": True,
-                                            "personalized": bool(user_preferences)
-                                        }
-                                    }
-                                    
-                                    # 콜백 호출
-                                    if chunk_callback:
-                                        await chunk_callback(chunk)
-                                            
                     except json.JSONDecodeError as e:
-                        logger.warning(f"JSON 파싱 오류: {e}, 라인: {line_text}")
+                        logger.warning(f"JSON 파싱 오류: {e}")
                         continue
-                    except Exception as e:
-                        logger.error(f"청크 처리 오류: {e}")
-                        continue
+
+                # 완료 신호 전송
+                logger.info("스트리밍 완료")
+                yield {
+                    "type": "done",
+                    "content": "",
+                    "is_complete": True
+                }
+                
+        except Exception as e:
+            logger.error(f"스트리밍 오류: {e}")
+            yield {
+                "type": "error",
+                "content": f"오류: {str(e)}",
+                "is_complete": True
+            }
 
             # 성공 통계 업데이트
             self.successful_requests += 1
@@ -729,6 +673,28 @@ Python 코드:
             personalization_msg = f" (개인화 적용: {user_preferences.get('skill_level', 'unknown')})" if user_preferences else ""
             logger.info(f"구조화된 스트리밍 완료{personalization_msg} (응답시간: {response_time:.2f}초)")
 
+        except aiohttp.ClientError as e:
+            self.failed_requests += 1
+            response_time = time.time() - start_time
+            self._update_metrics(response_time, False)
+            
+            # Transfer-Encoding 오류 특별 처리
+            if "Transfer" in str(e) or "transfer" in str(e).lower():
+                error_msg = "코드 생성 중 네트워크 오류가 발생했습니다. 잠시 후 다시 시도해주세요."
+                logger.error(f"Transfer-Encoding 오류 감지: {e}")
+            else:
+                error_msg = f"코드 생성 중 네트워크 오류가 발생했습니다: {str(e)}"
+                logger.error(f"aiohttp 클라이언트 오류: {e}")
+            
+            yield {
+                "type": "error",
+                "content": error_msg,
+                "is_complete": True,
+                "error": str(e),
+                "error_type": "network_error",
+                "personalized": bool(user_preferences)
+            }
+            
         except Exception as e:
             self.failed_requests += 1
             response_time = time.time() - start_time
@@ -738,9 +704,10 @@ Python 코드:
             
             yield {
                 "type": "error",
-                "content": f"코드 생성 중 오류가 발생했습니다: {str(e)}",
+                "content": f"코드 생성 중 예상치 못한 오류가 발생했습니다: {str(e)}",
                 "is_complete": True,
                 "error": str(e),
+                "error_type": "general_error",
                 "personalized": bool(user_preferences)
             }
 
