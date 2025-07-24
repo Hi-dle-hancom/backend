@@ -383,12 +383,16 @@ class VLLMIntegrationService:
         self.failed_requests = 0
         self.avg_response_time = 0.0
         
-        # 모델 타입 매핑
+        # 모델 타입 매핑 (완전한 매핑)
         self.model_mapping = {
             ModelType.CODE_GENERATION: VLLMModelType.PROMPT,
             ModelType.CODE_COMPLETION: VLLMModelType.AUTOCOMPLETE,
             ModelType.CODE_EXPLANATION: VLLMModelType.COMMENT,
+            ModelType.CODE_REVIEW: VLLMModelType.COMMENT,
             ModelType.BUG_FIX: VLLMModelType.ERROR_FIX,
+            ModelType.CODE_OPTIMIZATION: VLLMModelType.PROMPT,
+            ModelType.UNIT_TEST_GENERATION: VLLMModelType.PROMPT,
+            ModelType.DOCUMENTATION: VLLMModelType.COMMENT,
         }
         
         logger.info("vLLM 통합 서비스 초기화 (적응형 모드)")
@@ -578,28 +582,47 @@ Python 코드:
         
         logger.info(f"스트리밍 요청 시작: {request.prompt[:50]}...")
         
+        start_time = time.time()
+        
         try:
-            # 기본 요청 준비
+            # vLLM 서버 스키마에 맞춘 요청 준비
+            mapped_model = self.model_mapping.get(request.model_type, request.model_type)
             payload = {
+                "user_id": hash(user_id) % 1000000,  # user_id를 정수로 변환
                 "prompt": request.prompt,
-                "model_type": request.model_type,
+                "model_type": str(mapped_model),  # VLLMModelType은 이미 문자열 상수
+                "user_select_options": user_preferences or {},  # 필수 필드
                 "max_tokens": request.max_tokens or 512,
                 "temperature": request.temperature or 0.7,
                 "top_p": request.top_p or 0.9
             }
             
+            logger.info(f"vLLM 서버 요청 페이로드: {json.dumps(payload, ensure_ascii=False)[:200]}...")
+            
             if not self.is_connected:
+                logger.info("vLLM 서버 연결 시도...")
                 await self.connect()
+            else:
+                logger.info("vLLM 서버 이미 연결됨")
 
+            # Transfer-Encoding 오류 방지를 위한 강화된 설정
+            timeout = aiohttp.ClientTimeout(
+                total=300,      # 전체 타임아웃
+                connect=30,     # 연결 타임아웃
+                sock_read=60    # 소켓 읽기 타임아웃
+            )
+            
             async with self.session.post(
                 f"{self.base_url}/generate/stream",
                 json=payload,
                 headers={
                     "Content-Type": "application/json",
                     "Accept": "text/event-stream",
-                    "Cache-Control": "no-cache"
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive"
                 },
-                timeout=aiohttp.ClientTimeout(total=300)
+                timeout=timeout,
+                chunked=True  # aiohttp가 자동으로 Transfer-Encoding 헤더 설정
             ) as response:
 
                 if response.status != 200:
@@ -612,42 +635,45 @@ Python 코드:
                     }
                     return
 
-                async for line in response.content:
-                    try:
-                        line_text = line.decode('utf-8').strip()
-                    except UnicodeDecodeError:
-                        continue
-
-                    if not line_text or not line_text.startswith('data: '):
-                        continue
-
-                    # 완료 신호 처리
-                    if line_text == 'data: [DONE]':
-                        logger.info("스트림 완료: [DONE]")
-                        break
-                        
-                    # JSON 데이터 처리
-                    try:
-                        data_part = line_text[6:]  # 'data: ' 제거
-                        parsed_data = json.loads(data_part)
-                        
-                        if parsed_data.get('type') == 'done':
-                            logger.info("스트림 완료: JSON done")
-                            break
-                        
-                        # 텍스트 데이터 전송
-                        if 'text' in parsed_data and parsed_data['text']:
-                            content = parsed_data['text']
-                            logger.debug(f"수신: '{content[:30]}...'")
-                            yield {
-                                "type": "token",
-                                "content": content,
-                                "is_complete": False
-                            }
+                logger.info(f"vLLM 서버 응답 시작, 상태: {response.status}")
+                logger.info(f"Content-Length: {response.headers.get('Content-Length', 'N/A')}, Transfer-Encoding: {response.headers.get('Transfer-Encoding', 'N/A')}")
+                
+                # 안전한 청크 읽기를 위한 개선된 방식
+                try:
+                    async for chunk in response.content.iter_chunked(8192):  # 8KB 청크로 읽기
+                        if not chunk:
+                            logger.debug("빈 청크 수신")
+                            continue
                             
-                    except json.JSONDecodeError as e:
-                        logger.warning(f"JSON 파싱 오류: {e}")
-                        continue
+                        try:
+                            chunk_text = chunk.decode('utf-8')
+                            lines = chunk_text.split('\n')
+                            
+                            for line in lines:
+                                line_text = line.strip()
+                                if line_text and line_text != 'data: ':
+                                    logger.debug(f"수신된 라인: '{line_text[:100]}...'")
+                                    result = await self._process_stream_line(line_text)
+                                    if result:
+                                        yield result
+                                        if result.get('type') == 'done':
+                                            return
+                                    
+                        except UnicodeDecodeError as e:
+                            logger.warning(f"Unicode 디코딩 오류: {e}")
+                            continue
+                        except Exception as e:
+                            logger.error(f"청크 처리 오류: {e}")
+                            continue
+                            
+                except Exception as e:
+                    logger.error(f"Transfer-Encoding 오류 발생: {e}")
+                    yield {
+                        "type": "error",
+                        "content": f"Transfer-Encoding 오류: {str(e)}",
+                        "is_complete": True
+                    }
+                    return
 
                 # 완료 신호 전송
                 logger.info("스트리밍 완료")
@@ -665,51 +691,48 @@ Python 코드:
                 "is_complete": True
             }
 
-            # 성공 통계 업데이트
-            self.successful_requests += 1
-            response_time = time.time() - start_time
-            self._update_metrics(response_time, True)
+    async def _process_stream_line(self, line_text: str):
+        """스트림 라인을 처리하는 내부 메서드"""
+        if not line_text:
+            logger.debug("빈 라인 건너뛰기")
+            return None
             
-            personalization_msg = f" (개인화 적용: {user_preferences.get('skill_level', 'unknown')})" if user_preferences else ""
-            logger.info(f"구조화된 스트리밍 완료{personalization_msg} (응답시간: {response_time:.2f}초)")
+        if not line_text.startswith('data: '):
+            logger.debug(f"data: 로 시작하지 않는 라인 건너뛰기: '{line_text[:50]}...'")
+            return None
 
-        except aiohttp.ClientError as e:
-            self.failed_requests += 1
-            response_time = time.time() - start_time
-            self._update_metrics(response_time, False)
+        # 완료 신호 처리
+        if line_text == 'data: [DONE]':
+            logger.info("스트림 완료: [DONE]")
+            return {"type": "done", "content": "", "is_complete": True}
             
-            # Transfer-Encoding 오류 특별 처리
-            if "Transfer" in str(e) or "transfer" in str(e).lower():
-                error_msg = "코드 생성 중 네트워크 오류가 발생했습니다. 잠시 후 다시 시도해주세요."
-                logger.error(f"Transfer-Encoding 오류 감지: {e}")
+        # JSON 데이터 처리
+        try:
+            data_part = line_text[6:]  # 'data: ' 제거
+            logger.debug(f"JSON 파싱 시도: '{data_part[:100]}...'")
+            parsed_data = json.loads(data_part)
+            logger.debug(f"파싱된 데이터: {parsed_data}")
+            
+            if parsed_data.get('type') == 'done':
+                logger.info("스트림 완료: JSON done")
+                return {"type": "done", "content": "", "is_complete": True}
+            
+            # 텍스트 데이터 전송
+            if 'text' in parsed_data and parsed_data['text']:
+                content = parsed_data['text']
+                logger.info(f"토큰 전송: '{content[:50]}...'")
+                return {
+                    "type": "token",
+                    "content": content,
+                    "is_complete": False
+                }
             else:
-                error_msg = f"코드 생성 중 네트워크 오류가 발생했습니다: {str(e)}"
-                logger.error(f"aiohttp 클라이언트 오류: {e}")
-            
-            yield {
-                "type": "error",
-                "content": error_msg,
-                "is_complete": True,
-                "error": str(e),
-                "error_type": "network_error",
-                "personalized": bool(user_preferences)
-            }
-            
-        except Exception as e:
-            self.failed_requests += 1
-            response_time = time.time() - start_time
-            self._update_metrics(response_time, False)
-            
-            logger.error(f"구조화된 스트리밍 생성 오류: {e}")
-            
-            yield {
-                "type": "error",
-                "content": f"코드 생성 중 예상치 못한 오류가 발생했습니다: {str(e)}",
-                "is_complete": True,
-                "error": str(e),
-                "error_type": "general_error",
-                "personalized": bool(user_preferences)
-            }
+                logger.debug(f"text 필드 없거나 비어있음: {parsed_data}")
+                return None
+                
+        except json.JSONDecodeError as e:
+            logger.warning(f"JSON 파싱 오류: {e}")
+            return None
 
     async def generate_code_sync(
         self,
