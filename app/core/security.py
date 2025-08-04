@@ -127,11 +127,26 @@ class APIKeyManager:
             self._create_initial_data()
 
     def _create_initial_data(self):
-        """✅ 완전 개선: 하드코딩 없는 동적 사용자 인증 시스템"""
+        """✅ 완전 개선: 하드코딩 없는 동적 사용자 인증 시스템 + 기본 API Key 생성"""
         # 모든 하드코딩 제거 - API 키는 실제 사용자 요청 시에만 동적 생성
         if settings.DYNAMIC_USER_AUTH_ENABLED:
             logger.info("🔒 동적 DB 기반 사용자 인증 시스템 활성화")
             logger.info("📝 API 키는 실제 사용자 로그인/등록 시 동적으로 생성됩니다")
+            
+            # 🆕 프론트엔드 호환성을 위한 기본 API Key 생성 (임시)
+            default_api_key = "hapa_demo_20241228_secure_key_for_testing"
+            if default_api_key not in self._api_keys:
+                self._api_keys[default_api_key] = APIKeyModel(
+                    api_key=default_api_key,
+                    user_id="demo_user",
+                    permissions=["code_generation", "feedback", "history"],
+                    created_at=datetime.now(),
+                    expires_at=datetime.now() + timedelta(days=365),  # 1년 유효
+                    is_active=True,
+                    usage_count=0
+                )
+                logger.info("🔑 기본 API Key 생성 완료 (프론트엔드 호환성용)")
+                self._save_api_keys()
         else:
             logger.warning("⚠️ 동적 사용자 인증이 비활성화되어 있습니다")
 

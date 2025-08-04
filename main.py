@@ -146,7 +146,7 @@ def create_application() -> FastAPI:
         allow_origins=hapa_settings.security.allowed_origins,
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type", "X-API-Key"],
+        allow_headers=["*"],  # 모든 헤더 허용 (fetch API 호환성)
         expose_headers=["X-Process-Time", "X-Rate-Limit-Remaining"]
     )
 

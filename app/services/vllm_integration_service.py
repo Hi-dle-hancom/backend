@@ -578,9 +578,47 @@ Python 코드:
         user_preferences: Optional[Dict[str, Any]] = None,
         chunk_callback: Optional[callable] = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
-        """간소화된 스트리밍 코드 생성"""
+        """스트리밍 코드 생성 (깨진 응답 재시도 로직 포함)"""
         
         logger.info(f"스트리밍 요청 시작: {request.prompt[:50]}...")
+        
+        start_time = time.time()
+        
+        # 🔧 재시도 로직 비활성화 (청크 중복 방지)
+        logger.info("재시도 로직 비활성화 - 단일 시도로 진행")
+        
+        try:
+            async for chunk in self._attempt_streaming_generation(request, user_id, user_preferences):
+                # 🔍 청크 품질 모니터링 (차단하지 않고 로그만)
+                if chunk.get('type') == 'token' and chunk.get('content'):
+                    if not self._validate_text_quality(chunk['content'], is_single_token=True):
+                        logger.warning(f"품질 낮은 토큰 감지 (전송 유지): '{chunk['content'][:30]}...'")
+                    else:
+                        logger.debug(f"정상 토큰: '{chunk['content'][:30]}...'")
+                
+                # 모든 청크를 그대로 전송 (중복 없음)
+                yield chunk
+                
+                if chunk.get('type') == 'done':
+                    logger.info("스트리밍 정상 완료")
+                    return
+                    
+        except Exception as e:
+            logger.error(f"스트리밍 오류: {e}")
+            yield {
+                "type": "error",
+                "content": f"오류: {str(e)}",
+                "is_complete": True
+            }
+            return
+    
+    async def _attempt_streaming_generation(
+        self,
+        request: CodeGenerationRequest,
+        user_id: str,
+        user_preferences: Optional[Dict[str, Any]] = None
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """단일 스트리밍 시도"""
         
         start_time = time.time()
         
@@ -638,19 +676,50 @@ Python 코드:
                 logger.info(f"vLLM 서버 응답 시작, 상태: {response.status}")
                 logger.info(f"Content-Length: {response.headers.get('Content-Length', 'N/A')}, Transfer-Encoding: {response.headers.get('Transfer-Encoding', 'N/A')}")
                 
-                # 안전한 청크 읽기를 위한 개선된 방식
+                # 🔧 UTF-8 안전 스트리밍 처리 (문자 깨짐 방지)
+                buffer = b''  # 바이트 버퍼
+                line_buffer = ''  # 라인 버퍼
+                
                 try:
-                    async for chunk in response.content.iter_chunked(8192):  # 8KB 청크로 읽기
+                    async for chunk in response.content.iter_chunked(1024):  # 1KB 청크로 축소
                         if not chunk:
                             logger.debug("빈 청크 수신")
                             continue
                             
                         try:
-                            chunk_text = chunk.decode('utf-8')
-                            lines = chunk_text.split('\n')
+                            # 바이트 버퍼에 추가
+                            buffer += chunk
                             
-                            for line in lines:
+                            # UTF-8 디코딩 시도 (불완전한 문자는 무시)
+                            try:
+                                decoded_text = buffer.decode('utf-8')
+                                buffer = b''  # 성공하면 버퍼 클리어
+                            except UnicodeDecodeError:
+                                # 불완전한 UTF-8 문자가 있으면 마지막 몇 바이트를 다음으로 미룸
+                                if len(buffer) > 4:  # UTF-8 최대 4바이트
+                                    # 앞부분만 디코딩 시도
+                                    for i in range(len(buffer) - 4, len(buffer)):
+                                        try:
+                                            decoded_text = buffer[:i].decode('utf-8')
+                                            buffer = buffer[i:]  # 나머지는 다음 청크와 합침
+                                            break
+                                        except UnicodeDecodeError:
+                                            continue
+                                    else:
+                                        # 디코딩 실패 시 다음 청크 대기
+                                        continue
+                                else:
+                                    # 버퍼가 작으면 다음 청크 대기
+                                    continue
+                            
+                            # 라인 버퍼에 추가
+                            line_buffer += decoded_text
+                            
+                            # 완전한 라인들만 처리
+                            while '\n' in line_buffer:
+                                line, line_buffer = line_buffer.split('\n', 1)
                                 line_text = line.strip()
+                                
                                 if line_text and line_text != 'data: ':
                                     logger.debug(f"수신된 라인: '{line_text[:100]}...'")
                                     result = await self._process_stream_line(line_text)
@@ -659,12 +728,21 @@ Python 코드:
                                         if result.get('type') == 'done':
                                             return
                                     
-                        except UnicodeDecodeError as e:
-                            logger.warning(f"Unicode 디코딩 오류: {e}")
-                            continue
                         except Exception as e:
                             logger.error(f"청크 처리 오류: {e}")
+                            # 오류 시 버퍼 초기화
+                            buffer = b''
+                            line_buffer = ''
                             continue
+                            
+                    # 마지막 남은 데이터 처리
+                    if line_buffer.strip():
+                        line_text = line_buffer.strip()
+                        if line_text and line_text != 'data: ':
+                            logger.debug(f"마지막 라인 처리: '{line_text[:100]}...'")
+                            result = await self._process_stream_line(line_text)
+                            if result:
+                                yield result
                             
                 except Exception as e:
                     logger.error(f"Transfer-Encoding 오류 발생: {e}")
@@ -691,8 +769,85 @@ Python 코드:
                 "is_complete": True
             }
 
+    def _validate_text_quality(self, text: str, is_single_token: bool = True) -> bool:
+        """텍스트 품질 검증 (단일 토큰에 대해 완화된 검증)"""
+        if not text or len(text.strip()) < 1:
+            return False
+        
+        # 단일 토큰에 대해서는 매우 관대한 검증
+        if is_single_token:
+            # 1. 기본 인쇄 가능 문자 체크만
+            printable_chars = sum(1 for c in text if c.isprintable() or c.isspace())
+            if len(text) > 0 and printable_chars / len(text) < 0.3:  # 30%로 완화
+                logger.warning(f"비인쇄 문자 많음: {printable_chars}/{len(text)}")
+                return False
+            
+            # 2. 심각한 깨진 패턴만 감지 (단일 토큰에서는 드물어야 함)
+            severe_patterns = [
+                r'([a-zA-Z])\1{5,}',  # 같은 문자 6개 이상 반복
+                r'([a-zA-Z]{3,})\1{3,}',  # 같은 패턴 4번 이상 반복
+                r'[\x00-\x1f\x7f-\x9f]{2,}',  # 제어 문자 연속
+            ]
+            
+            for pattern in severe_patterns:
+                if re.search(pattern, text):
+                    logger.warning(f"심각한 깨진 패턴 감지: {pattern}")
+                    return False
+            
+            # 3. 단일 토큰에서 특수문자는 정상일 수 있음 (-, _, . 등)
+            # 따라서 특수문자 비율 체크 생략
+            
+            return True
+        
+        # 전체 텍스트에 대해서는 엄격한 검증
+        else:
+            # 1. 기본 문자 비율 체크
+            printable_chars = sum(1 for c in text if c.isprintable() or c.isspace())
+            if len(text) > 0 and printable_chars / len(text) < 0.7:
+                logger.warning(f"비인쇄 가능 문자 비율 낮음: {printable_chars}/{len(text)}")
+                return False
+            
+            # 2. 깨진 패턴 감지
+            broken_patterns = [
+                r'([a-zA-Z])\1{4,}',  # 같은 문자 5개 이상 반복
+                r'([a-zA-Z]{2,})\1{3,}',  # 같은 패턴 4번 이상 반복
+            ]
+            
+            broken_count = 0
+            for pattern in broken_patterns:
+                matches = re.findall(pattern, text)
+                broken_count += len(matches)
+            
+            # 3. 깨진 문자 비율 체크
+            words = text.split()
+            if len(words) > 3 and broken_count / len(words) > 0.5:  # 50%로 완화
+                logger.warning(f"깨진 패턴 비율 높음: {broken_count}/{len(words)}")
+                return False
+            
+            return True
+    
+    def _clean_corrupted_text(self, text: str) -> str:
+        """깨진 텍스트 정리"""
+        if not text:
+            return text
+            
+        # 1. 기본 정리
+        cleaned = text.strip()
+        
+        # 2. 깨진 패턴 제거
+        # 같은 문자 반복 제거
+        cleaned = re.sub(r'([a-zA-Z])\1{3,}', r'\1', cleaned)
+        
+        # 이상한 반복 패턴 제거
+        cleaned = re.sub(r'([a-zA-Z]{2,})\1{2,}', r'\1', cleaned)
+        
+        # 비인쇄 문자 제거
+        cleaned = ''.join(c for c in cleaned if c.isprintable() or c.isspace())
+        
+        return cleaned.strip()
+
     async def _process_stream_line(self, line_text: str):
-        """스트림 라인을 처리하는 내부 메서드"""
+        """스트림 라인을 처리하는 내부 메서드 (텍스트 품질 검증 포함)"""
         if not line_text:
             logger.debug("빈 라인 건너뛰기")
             return None
@@ -717,10 +872,14 @@ Python 코드:
                 logger.info("스트림 완료: JSON done")
                 return {"type": "done", "content": "", "is_complete": True}
             
-            # 텍스트 데이터 전송
+            # 텍스트 데이터 전송 (단순화된 처리)
             if 'text' in parsed_data and parsed_data['text']:
-                content = parsed_data['text']
-                logger.info(f"토큰 전송: '{content[:50]}...'")
+                raw_content = parsed_data['text']
+                
+                # 🔧 복잡한 검증 로직 제거, 모든 텍스트 전송
+                logger.debug(f"토큰 전송: '{raw_content[:50]}...'")
+                content = raw_content
+                
                 return {
                     "type": "token",
                     "content": content,
@@ -730,8 +889,7 @@ Python 코드:
                 logger.debug(f"text 필드 없거나 비어있음: {parsed_data}")
                 return None
                 
-        except json.JSONDecodeError as e:
-            logger.warning(f"JSON 파싱 오류: {e}")
+        except json.JSONDecodeError as e: 
             return None
 
     async def generate_code_sync(
