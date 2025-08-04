@@ -681,7 +681,7 @@ Python 코드:
                 line_buffer = ''  # 라인 버퍼
                 
                 try:
-                    async for chunk in response.content.iter_chunked(1024):  # 1KB 청크로 축소
+                    async for chunk in response.content.iter_chunked(4096):  # 1KB → 4KB 청크로 증가 (처리 효율성 향상)
                         if not chunk:
                             logger.debug("빈 청크 수신")
                             continue
@@ -931,7 +931,7 @@ Python 코드:
                 model_used="vllm",
                 processing_time=time.time() - start_time,
                 token_usage={"total_tokens": len(accumulated_content.split())},
-                confidence_score=parsed_response["metadata"]["parsing_confidence"]
+                confidence_score=parsed_response.get("metadata", {}).get("parsing_confidence", 0.8)
             )
             
             # 개인화 메타데이터 추가
